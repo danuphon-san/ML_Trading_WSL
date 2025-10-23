@@ -1,0 +1,95 @@
+# Stock Universe Selection Rules
+
+# Basic filters
+filters:
+  min_price: 5.0
+  max_price: null  # null = no upper limit
+  min_volume: 500000  # Average daily volume
+  min_market_cap: 500000000  # $500M
+
+# Exchange filters
+exchanges:
+  include:
+    - "NYSE"
+    - "NASDAQ"
+  exclude:
+    - "OTC"
+    - "PINK"
+
+# Sector filters
+sectors:
+  exclude:
+    # - "Real Estate"
+    # - "Utilities"
+  include: []  # Empty = all sectors
+
+# Industry filters
+industries:
+  exclude:
+    # - "Tobacco"
+    # - "Gambling"
+  include: []  # Empty = all industries
+
+# Security type filters
+security_types:
+  include:
+    - "Common Stock"
+  exclude:
+    - "ETF"
+    - "ADR"  # American Depositary Receipt
+    - "REIT"
+    - "Warrant"
+    - "Unit"
+    - "Preferred Stock"
+
+# Liquidity filters
+liquidity:
+  min_trading_days: 200  # Minimum number of trading days in last year
+  min_avg_dollar_volume: 5000000  # $5M average daily dollar volume
+  max_bid_ask_spread_pct: 1.0  # Maximum 1% bid-ask spread
+
+# Quality filters
+quality:
+  exclude_penny_stocks: true
+  exclude_spacs: true
+  min_analyst_coverage: 0  # Minimum number of analysts covering
+  require_fundamentals: true  # Must have fundamental data available
+
+# Survivorship bias handling
+survivorship:
+  include_delisted: false  # Include delisted stocks in historical analysis
+  min_history_years: 2  # Minimum years of historical data
+
+# Universe size
+size:
+  method: "market_cap"  # market_cap, liquidity, equal_weight
+  max_symbols: 500  # Maximum number of symbols in universe
+  rebalance_frequency: "weekly"  # How often to refresh universe
+
+# Dynamic inclusion rules
+dynamic:
+  # Add symbols that meet criteria even if not in top N by market cap
+  auto_include_if:
+    recent_ipo_days: null  # null = disabled; e.g., 180 = include IPOs in last 6 months
+    high_momentum_percentile: null  # null = disabled; e.g., 95 = include top 5% momentum
+    analyst_rating: null  # null = disabled; e.g., "Strong Buy"
+
+# Exclusion lists
+exclusions:
+  # Manual symbol exclusions
+  symbols:
+    # - "TSLA"  # Example: exclude specific symbols
+
+  # Regex patterns to exclude
+  patterns:
+    - ".*\\.[A-Z]$"  # Exclude symbols with exchange suffixes
+    - "^[A-Z]{5,}$"  # Exclude 5+ letter symbols (often warrants/units)
+
+# Special handling
+special:
+  # Handle corporate actions
+  handle_splits: true
+  handle_dividends: true
+
+  # IPO waiting period
+  ipo_waiting_days: 90  # Wait 90 days after IPO before inclusion

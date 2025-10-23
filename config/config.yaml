@@ -1,0 +1,230 @@
+# US Stock ML Trading System - Central Configuration
+
+# Data paths
+data:
+  root: "data"
+  raw: "data/raw"
+  parquet: "data/parquet"
+  fundamentals: "data/fundamentals"
+  features: "data/features"
+  labels: "data/labels"
+  models: "data/models"
+  portfolio: "data/portfolio"
+  reports: "data/reports"
+
+# Data ingestion
+ingest:
+  provider: "yfinance"  # yfinance, alpha_vantage, polygon, etc.
+  frequencies:
+    - "1d"
+  start_date: "2015-01-01"
+  end_date: null  # null = today
+  auto_update: true
+  update_hour: 2  # Update data after market close (EST)
+
+# Universe selection
+universe:
+  config_file: "config/universe.yaml"
+  min_price: 5.0
+  min_volume: 500000  # Minimum average daily volume
+  min_market_cap: 500000000  # $500M minimum market cap
+  exchanges:
+    - "NYSE"
+    - "NASDAQ"
+  exclude_sectors: []  # e.g., ["Real Estate", "Utilities"]
+  max_symbols: 500  # Top N by market cap
+  refresh_frequency: "daily"  # daily, weekly, monthly
+
+# Technical features
+features:
+  technical:
+    lookback_windows:
+      short: [5, 10, 20]
+      medium: [50, 100]
+      long: [200]
+    indicators:
+      - momentum  # Price momentum
+      - rsi       # Relative Strength Index
+      - volatility  # Historical volatility
+      - ma        # Moving averages
+      - volume    # Volume indicators
+      - statistical  # Statistical features (skewness, kurtosis, autocorr)
+      - composite   # Composite features (Sharpe, vol ratio, z-scores)
+      - range       # Range features (Stochastic, high-low patterns)
+
+  # Fundamental features
+  fundamental:
+    ratios:
+      - pe_ratio
+      - pb_ratio
+      - ps_ratio
+      - ev_ebitda
+      - roe
+      - roa
+      - debt_to_equity
+      - current_ratio
+      - quick_ratio
+
+  # Point-in-time alignment (critical for fundamentals)
+  pit_alignment:
+    pit_min_lag_days: 1  # Minimum lag between publication and usage
+    default_public_lag_days: 45  # Fallback when public_date missing
+    earnings_blackout_days: 2  # Exclude dates around earnings
+
+# Labels
+labels:
+  horizon: 5  # Forward return horizon in days
+  target_type: "return"  # return, log_return, binary
+  min_periods: 3  # Minimum periods required for label calculation
+
+# Machine learning
+modeling:
+  algorithm: "xgboost"  # xgboost, random_forest, lightgbm
+  target_variable: "forward_return_5d"
+
+  # Time-series cross-validation
+  cv:
+    n_splits: 5
+    test_size: 0.2
+    embargo_days: 5  # Gap between train and test to prevent leakage
+    purge_days: 2    # Additional purge period
+
+  # Model parameters
+  xgboost:
+    n_estimators: 200
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+    colsample_bytree: 0.8
+    objective: "reg:squarederror"
+    eval_metric: "rmse"
+    early_stopping_rounds: 20
+
+  random_forest:
+    n_estimators: 200
+    max_depth: 10
+    min_samples_split: 20
+    min_samples_leaf: 10
+    max_features: "sqrt"
+
+  # Feature selection
+  feature_selection:
+    method: "importance"  # importance, recursive, none
+    top_k: 50  # Keep top K features
+
+  # MLflow tracking
+  mlflow:
+    tracking_uri: "mlruns"
+    experiment_name: "us_stock_ml"
+
+# Portfolio construction
+portfolio:
+  # Selection
+  top_k: 20  # Number of positions
+  selection_method: "top_score"  # top_score, threshold
+  score_threshold: 0.0  # Only if selection_method = threshold
+
+  # Optimizer Selection
+  # Available: equal, score_weighted, inv_vol, mvo, mvo_reg, hrp, hybrid
+  optimizer: "pypfopt"  # Main optimizer to use
+
+  # PyPortfolioOpt settings (MVO, MVO_REG)
+  pypfopt:
+    # Score to expected return mapping
+    mu_mapping: "rank_to_mu"  # identity, sigmoid, rank_to_mu
+    mu_range: [0.0, 0.20]  # Target annual return range for rank_to_mu
+
+    # Covariance estimation
+    cov_lookback_days: 252  # 1 year of daily returns
+    cov_method: "sample"  # sample, ledoit_wolf, shrunk
+
+    # Optimization objective
+    objective: "max_sharpe"  # max_sharpe, min_volatility, efficient_risk
+    risk_free_rate: 0.02  # Annual risk-free rate
+
+    # Regularization
+    l2_reg: 0.01  # L2 regularization gamma (for stability)
+
+    # Constraints
+    min_weight: 0.01  # Minimum position size (1%)
+    max_weight: 0.15  # Maximum position size (15%)
+
+  # Inverse Volatility settings
+  inverse_vol:
+    lookback_days: 60
+
+  # Hybrid Score + Risk settings
+  hybrid:
+    score_weight: 0.5      # Weight for ML scores (0-1)
+    risk_weight: 0.5       # Weight for inverse volatility (0-1)
+    lookback_days: 60      # Volatility lookback window
+
+  # Hierarchical Risk Parity settings
+  hrp:
+    lookback_days: 252     # Price history for correlation
+    linkage_method: "single"  # single, average, complete, ward
+    score_tilt: 0.0        # Optional: tilt HRP weights towards scores (0-1)
+
+  # Costs (realistic trading costs)
+  costs_bps: 1.0      # Commission/fee per side (bps of notional)
+  slippage_bps: 2.0   # Market impact/bid-ask (bps)
+
+  # Risk limits
+  max_turnover: 0.35  # Alert if turnover exceeds 35%
+  max_leverage: 1.0   # Long-only (1.0), allow leverage (>1.0)
+
+# Backtesting
+backtest:
+  start_date: "2018-01-01"
+  end_date: null  # null = today
+  initial_capital: 10000 # Starting capital in USD
+  rebalance_frequency: "weekly"  # daily, weekly, monthly
+
+  # Execution timing
+  execution_timing: "next_open"  # 'close' (same-day) or 'next_open' (realistic, avoid look-ahead)
+
+  # Cost model (uses portfolio.costs_bps and portfolio.slippage_bps)
+  apply_costs: true
+
+  # Reporting
+  benchmark: "SPY"  # Compare to S&P 500
+
+# Live operations
+live:
+  enabled: false
+  dry_run: true  # Simulate trades without execution
+  execution_time: "09:35"  # EST, after market open
+
+  # Trade execution
+  broker: null  # alpaca, interactive_brokers, etc.
+
+  # Monitoring
+  alerts:
+    enabled: true
+    email: null  # Email for alerts
+    slack_webhook: null  # Slack webhook URL
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/app.log"
+  rotation: "10 MB"
+  retention: "30 days"
+
+# Reporting
+reporting:
+  benchmark: "SPY"
+  output_dir: "data/reports"
+  metrics:
+    - total_return
+    - sharpe_ratio
+    - max_drawdown
+    - sortino_ratio
+    - calmar_ratio
+    - win_rate
+    - avg_win_loss
+    - turnover
+  save_equity_curve: true
+  save_positions: true
+  save_trades: true
