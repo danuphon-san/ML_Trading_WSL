@@ -126,9 +126,14 @@ class FundamentalFeatures:
         if pd.api.types.is_datetime64tz_dtype(fundamentals_df['public_date']):
             fundamentals_df['public_date'] = fundamentals_df['public_date'].dt.tz_localize(None)
 
-        # Sort both dataframes
-        price_df = price_df.sort_values(['symbol', 'date'])
-        fundamentals_df = fundamentals_df.sort_values(['symbol', 'available_date'])
+        # Validate and clean data for merge_asof
+        # Drop rows with NaN in key columns
+        price_df = price_df.dropna(subset=['symbol', 'date'])
+        fundamentals_df = fundamentals_df.dropna(subset=['symbol', 'available_date'])
+
+        # Sort both dataframes and reset index (merge_asof requires sorted data)
+        price_df = price_df.sort_values(['symbol', 'date']).reset_index(drop=True)
+        fundamentals_df = fundamentals_df.sort_values(['symbol', 'available_date']).reset_index(drop=True)
 
         # Merge as-of join (using available_date as key)
         aligned = pd.merge_asof(

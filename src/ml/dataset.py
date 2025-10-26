@@ -259,3 +259,79 @@ def create_cv_folds(
     logger.info(f"Created {len(folds)} CV folds")
 
     return folds
+
+
+def create_walk_forward_splits(
+    df: pd.DataFrame,
+    n_windows: int = 6,
+    embargo_days: int = 5,
+    purge_days: int = 2,
+    min_train_size: float = 0.3
+) -> List[Tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Create walk-forward cross-validation splits (expanding window)
+
+    Walk-forward differs from regular CV:
+    - Training window EXPANDS forward (uses all historical data)
+    - Test window rolls forward
+    - More realistic for production deployment
+
+    Example with 6 windows:
+        Window 1: Train[  0%---30%] Test[30%--40%]
+        Window 2: Train[  0%---40%] Test[40%--50%]
+        Window 3: Train[  0%---50%] Test[50%--60%]
+        ...
+        Window 6: Train[  0%---80%] Test[80%--90%]
+
+    Args:
+        df: DataFrame with date column
+        n_windows: Number of walk-forward windows
+        embargo_days: Gap between train and test
+        purge_days: Additional purge period
+        min_train_size: Minimum training set size (fraction)
+
+    Returns:
+        List of (train_df, test_df) tuples
+    """
+    df = df.sort_values('date')
+    dates = sorted(df['date'].unique())
+    n_dates = len(dates)
+
+    # Calculate test window size
+    available_for_test = 1.0 - min_train_size
+    test_window_size = available_for_test / n_windows
+
+    splits = []
+
+    for window_idx in range(n_windows):
+        # Test period: progressively moves forward
+        test_start_pct = min_train_size + (window_idx * test_window_size)
+        test_end_pct = test_start_pct + test_window_size
+
+        test_start_idx = int(n_dates * test_start_pct)
+        test_end_idx = int(n_dates * test_end_pct)
+
+        if test_end_idx >= n_dates:
+            test_end_idx = n_dates - 1
+
+        # Training period: ALL data before test period (expanding window)
+        test_start_date = dates[test_start_idx]
+        test_end_date = dates[test_end_idx]
+
+        # Apply embargo and purge
+        train_end_date = test_start_date - pd.Timedelta(days=embargo_days + purge_days)
+
+        # Create splits
+        train_df = df[df['date'] <= train_end_date].copy()
+        test_df = df[(df['date'] >= test_start_date) & (df['date'] <= test_end_date)].copy()
+
+        if len(train_df) > 0 and len(test_df) > 0:
+            splits.append((train_df, test_df))
+
+            logger.debug(f"Walk-forward window {window_idx+1}/{n_windows}: "
+                        f"Train={len(train_df)} rows (ALL data to {train_end_date}), "
+                        f"Test={len(test_df)} rows ({test_start_date} to {test_end_date})")
+
+    logger.info(f"Created {len(splits)} walk-forward splits with expanding training window")
+
+    return splits

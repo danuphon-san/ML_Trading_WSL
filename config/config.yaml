@@ -228,3 +228,35 @@ reporting:
   save_equity_curve: true
   save_positions: true
   save_trades: true
+
+# Rebalancing schedules (for multi-asset sleeves)
+rebalance:
+  equities_frequency: weekly  # weekly, daily, monthly
+  crypto_frequency: 3d  # 3d = every 3 days
+
+# Validation & Cross-Validation
+validation:
+  scheme: walk_forward  # walk_forward, time_series_split
+  windows: 6  # Number of rolling windows
+  embargo_days: 5  # Embargo period between train/test
+  purge_days: 2  # Additional purge to remove overlapping labels
+
+# Multi-sleeve allocation (equities, crypto, cash)
+allocation:
+  method: erc  # erc (Equal Risk Contribution), mvo_reg (Regularized MVO)
+  crypto_risk_budget_max: 0.25  # Max 25% of risk budget to crypto
+  rebalance_threshold: 0.05  # Rebalance if allocation drifts >5%
+
+# Operations & Monitoring
+ops:
+  alerts: email  # email, slack, none
+  email_recipients:
+    - user@example.com
+  schedule:
+    equities: "cron: 30 21 * * 1-5"  # After US market close (UTC)
+    crypto: "cron: 0 12 * * 1,3,5"  # Mon, Wed, Fri at noon
+  kill_switch:
+    enabled: true
+    max_daily_loss_pct: 0.03  # Halt if daily loss > 3%
+    min_live_sharpe_lookback_weeks: 6  # Monitor rolling 6-week Sharpe
+    min_live_sharpe_threshold: 0.5  # Alert if Sharpe < 0.5
