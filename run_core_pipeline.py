@@ -143,8 +143,18 @@ def main():
         ingester.save_parquet(state['ohlcv_data'])
 
         # Fetch fundamentals
-        fund_ingester = FundamentalsIngester(storage_path="data/fundamentals")
-        logger.info("Fetching fundamental data")
+        fund_config = config.get('fundamentals', {})
+        fund_provider = fund_config.get('provider', 'yfinance')
+        fund_api_key = None
+        if fund_provider == 'alpha_vantage':
+            fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
+
+        fund_ingester = FundamentalsIngester(
+            storage_path="data/fundamentals",
+            provider=fund_provider,
+            api_key=fund_api_key
+        )
+        logger.info(f"Fetching fundamental data using {fund_provider}")
         state['fundamentals_data'] = fund_ingester.fetch_fundamentals(state['symbols'])
         fund_ingester.save_parquet(state['fundamentals_data'])
 
@@ -205,7 +215,17 @@ def main():
 
     def step_4_fundamental_features():
         """Generate fundamental features with PIT alignment"""
-        fund_ingester = FundamentalsIngester(storage_path="data/fundamentals")
+        fund_config = config.get('fundamentals', {})
+        fund_provider = fund_config.get('provider', 'yfinance')
+        fund_api_key = None
+        if fund_provider == 'alpha_vantage':
+            fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
+
+        fund_ingester = FundamentalsIngester(
+            storage_path="data/fundamentals",
+            provider=fund_provider,
+            api_key=fund_api_key
+        )
 
         if state['symbols'] is None:
             state['symbols'] = load_sp500_constituents()[:args.symbols]
@@ -317,6 +337,9 @@ def main():
         # Save model (artifact #5)
         saver.save_model(state['trainer'].model)
 
+        # Store feature columns for step 8
+        state['feature_cols'] = dataset.feature_cols
+
     if 7 in steps_to_run:
         run_with_error_handling(
             step_7_model_training, 7, step_names[7], tracker,
@@ -330,7 +353,7 @@ def main():
     def step_8_signal_generation():
         """Generate ML scores for test period"""
         label_col = f"forward_return_{config['labels']['horizon']}d"
-        dataset = MLDataset(label_col=label_col)
+        dataset = MLDataset(feature_cols=state['feature_cols'], label_col=label_col)
 
         # Score test set
         test_df_clean = state['test_df'][state['test_df'][label_col].notna()].copy()
