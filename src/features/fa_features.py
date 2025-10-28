@@ -114,6 +114,18 @@ class FundamentalFeatures:
 
         fundamentals_df['available_date'] = fundamentals_df['public_date'] + pd.Timedelta(days=self.pit_min_lag_days)
 
+        # Validate and clean data for merge_asof
+        # Drop rows with NaN in key columns
+        price_df = price_df.dropna(subset=['symbol', 'date'])
+        fundamentals_df = fundamentals_df.dropna(subset=['symbol', 'available_date'])
+
+        # Ensure date columns are datetime type (before timezone handling)
+        price_df['date'] = pd.to_datetime(price_df['date'])
+        fundamentals_df['available_date'] = pd.to_datetime(fundamentals_df['available_date'])
+
+        if 'public_date' in fundamentals_df.columns:
+            fundamentals_df['public_date'] = pd.to_datetime(fundamentals_df['public_date'])
+
         # Normalize timezones for merge compatibility
         # Convert both to timezone-naive (strip timezone from price data if present)
         if pd.api.types.is_datetime64tz_dtype(price_df['date']):
@@ -123,28 +135,49 @@ class FundamentalFeatures:
         if pd.api.types.is_datetime64tz_dtype(fundamentals_df['available_date']):
             fundamentals_df['available_date'] = fundamentals_df['available_date'].dt.tz_localize(None)
 
-        if pd.api.types.is_datetime64tz_dtype(fundamentals_df['public_date']):
+        if 'public_date' in fundamentals_df.columns and pd.api.types.is_datetime64tz_dtype(fundamentals_df['public_date']):
             fundamentals_df['public_date'] = fundamentals_df['public_date'].dt.tz_localize(None)
 
-        # Validate and clean data for merge_asof
-        # Drop rows with NaN in key columns
-        price_df = price_df.dropna(subset=['symbol', 'date'])
-        fundamentals_df = fundamentals_df.dropna(subset=['symbol', 'available_date'])
+        # Ensure symbol is string type
+        price_df['symbol'] = price_df['symbol'].astype(str)
+        fundamentals_df['symbol'] = fundamentals_df['symbol'].astype(str)
 
-        # Sort both dataframes and reset index (merge_asof requires sorted data)
+        # Remove any duplicate rows
+        price_df = price_df.drop_duplicates(subset=['symbol', 'date'])
+        fundamentals_df = fundamentals_df.drop_duplicates(subset=['symbol', 'available_date'])
+
+        # Sort both dataframes
         price_df = price_df.sort_values(['symbol', 'date']).reset_index(drop=True)
         fundamentals_df = fundamentals_df.sort_values(['symbol', 'available_date']).reset_index(drop=True)
 
-        # Merge as-of join (using available_date as key)
-        aligned = pd.merge_asof(
-            price_df,
-            fundamentals_df,
-            left_on='date',
-            right_on='available_date',
-            by='symbol',
-            direction='backward',  # Use most recent available data
-            suffixes=('', '_fund')
-        )
+        # Perform merge_asof per symbol to avoid sorting issues
+        # This is more robust when dealing with large datasets with complex dtypes
+        logger.debug(f"Merging {len(price_df['symbol'].unique())} symbols")
+
+        aligned_list = []
+        symbols = sorted(price_df['symbol'].unique())
+
+        for symbol in symbols:
+            price_symbol = price_df[price_df['symbol'] == symbol].sort_values('date').reset_index(drop=True)
+            fund_symbol = fundamentals_df[fundamentals_df['symbol'] == symbol].sort_values('available_date').reset_index(drop=True)
+
+            if len(fund_symbol) == 0:
+                # No fundamentals for this symbol, keep price data without fundamental features
+                aligned_list.append(price_symbol)
+                continue
+
+            # Merge as-of join for this symbol
+            aligned_symbol = pd.merge_asof(
+                price_symbol,
+                fund_symbol,
+                left_on='date',
+                right_on='available_date',
+                direction='backward',  # Use most recent available data
+                suffixes=('', '_fund')
+            )
+            aligned_list.append(aligned_symbol)
+
+        aligned = pd.concat(aligned_list, ignore_index=True)
 
         # Apply earnings blackout filter
         aligned = self._apply_earnings_blackout(aligned)

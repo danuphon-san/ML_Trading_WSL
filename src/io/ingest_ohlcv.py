@@ -146,6 +146,27 @@ class OHLCVIngester:
 
         logger.info(f"Saved data to {freq_path}")
 
+    def save_symbol_parquet(
+        self,
+        symbol: str,
+        df: pd.DataFrame,
+        frequency: str = "1d"
+    ):
+        """
+        Save single symbol OHLCV data to parquet file
+
+        Args:
+            symbol: Symbol ticker
+            df: DataFrame with OHLCV data
+            frequency: Data frequency for organizing storage
+        """
+        freq_path = self.storage_path / frequency
+        freq_path.mkdir(parents=True, exist_ok=True)
+
+        symbol_path = freq_path / f"{symbol}.parquet"
+        df.to_parquet(symbol_path, index=False, compression='snappy')
+        logger.debug(f"Saved {symbol} to {symbol_path}")
+
     def load_parquet(
         self,
         symbols: Optional[List[str]] = None,

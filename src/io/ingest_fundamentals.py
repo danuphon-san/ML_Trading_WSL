@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import List, Optional, Dict
 import pandas as pd
 import yfinance as yf
+import requests
+import time
 from loguru import logger
 from tqdm import tqdm
 
@@ -12,17 +14,29 @@ from tqdm import tqdm
 class FundamentalsIngester:
     """Ingest fundamental data from providers"""
 
-    def __init__(self, storage_path: str = "data/fundamentals"):
+    def __init__(
+        self,
+        storage_path: str = "data/fundamentals",
+        provider: str = "yfinance",
+        api_key: Optional[str] = None
+    ):
         """
         Initialize fundamentals ingester
 
         Args:
             storage_path: Path to store fundamental data
+            provider: Data provider ('yfinance' or 'alpha_vantage')
+            api_key: API key for provider (required for alpha_vantage)
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.provider = provider.lower()
+        self.api_key = api_key
 
-        logger.info(f"Initialized FundamentalsIngester with storage_path={storage_path}")
+        if self.provider == "alpha_vantage" and not self.api_key:
+            raise ValueError("API key required for Alpha Vantage provider")
+
+        logger.info(f"Initialized FundamentalsIngester with storage_path={storage_path}, provider={provider}")
 
     def fetch_fundamentals(
         self,
@@ -53,7 +67,11 @@ class FundamentalsIngester:
 
         for symbol in tqdm(symbols, desc="Fetching fundamentals"):
             try:
-                df = self._fetch_symbol_fundamentals(symbol, metrics)
+                if self.provider == "alpha_vantage":
+                    df = self._fetch_alpha_vantage_fundamentals(symbol, metrics)
+                else:
+                    df = self._fetch_symbol_fundamentals(symbol, metrics)
+
                 if df is not None and not df.empty:
                     data_dict[symbol] = df
                     logger.debug(f"Fetched {len(df)} quarters for {symbol}")
@@ -168,6 +186,150 @@ class FundamentalsIngester:
             logger.error(f"Error fetching {symbol}: {type(e).__name__}: {str(e)}")
             return None
 
+    def _fetch_alpha_vantage_fundamentals(
+        self,
+        symbol: str,
+        metrics: List[str]
+    ) -> Optional[pd.DataFrame]:
+        """Fetch fundamentals for single symbol from Alpha Vantage"""
+        try:
+            base_url = "https://www.alphavantage.co/query"
+
+            # Fetch Income Statement
+            params = {
+                'function': 'INCOME_STATEMENT',
+                'symbol': symbol,
+                'apikey': self.api_key
+            }
+            response = requests.get(base_url, params=params)
+            income_data = response.json()
+
+            if 'Note' in income_data or 'Error Message' in income_data:
+                logger.warning(f"API limit or error for {symbol}: {income_data}")
+                return None
+
+            time.sleep(0.3)  # Rate limit: ~5 calls per minute for free tier
+
+            # Fetch Balance Sheet
+            params['function'] = 'BALANCE_SHEET'
+            response = requests.get(base_url, params=params)
+            balance_data = response.json()
+
+            time.sleep(0.3)
+
+            # Fetch Cash Flow
+            params['function'] = 'CASH_FLOW'
+            response = requests.get(base_url, params=params)
+            cashflow_data = response.json()
+
+            time.sleep(0.3)
+
+            # Fetch Overview for ratios
+            params['function'] = 'OVERVIEW'
+            response = requests.get(base_url, params=params)
+            overview_data = response.json()
+
+            if 'quarterlyReports' not in income_data:
+                logger.warning(f"No quarterly reports for {symbol}")
+                return None
+
+            # Build dataframe from quarterly reports
+            records = []
+            quarterly_income = income_data.get('quarterlyReports', [])
+            quarterly_balance = {r['fiscalDateEnding']: r for r in balance_data.get('quarterlyReports', [])}
+            quarterly_cashflow = {r['fiscalDateEnding']: r for r in cashflow_data.get('quarterlyReports', [])}
+
+            for income_report in quarterly_income:
+                date_str = income_report['fiscalDateEnding']
+
+                record = {
+                    'symbol': symbol,
+                    'date': pd.to_datetime(date_str),
+                    'period_type': 'quarterly'
+                }
+
+                # Extract from overview (current ratios)
+                record['market_cap'] = self._safe_float(overview_data.get('MarketCapitalization'))
+                record['pe_ratio'] = self._safe_float(overview_data.get('PERatio'))
+                record['pb_ratio'] = self._safe_float(overview_data.get('PriceToBookRatio'))
+                record['ps_ratio'] = self._safe_float(overview_data.get('PriceToSalesRatioTTM'))
+                record['ev_ebitda'] = self._safe_float(overview_data.get('EVToEBITDA'))
+                record['roe'] = self._safe_float(overview_data.get('ReturnOnEquityTTM'))
+                record['roa'] = self._safe_float(overview_data.get('ReturnOnAssetsTTM'))
+
+                # Extract from income statement
+                record['revenue'] = self._safe_float(income_report.get('totalRevenue'))
+                record['net_income'] = self._safe_float(income_report.get('netIncome'))
+                record['ebitda'] = self._safe_float(income_report.get('ebitda'))
+                record['gross_profit'] = self._safe_float(income_report.get('grossProfit'))
+
+                # Extract from balance sheet
+                if date_str in quarterly_balance:
+                    balance = quarterly_balance[date_str]
+                    record['total_assets'] = self._safe_float(balance.get('totalAssets'))
+                    record['total_liabilities'] = self._safe_float(balance.get('totalLiabilities'))
+                    record['shareholders_equity'] = self._safe_float(balance.get('totalShareholderEquity'))
+                    record['current_assets'] = self._safe_float(balance.get('totalCurrentAssets'))
+                    record['current_liabilities'] = self._safe_float(balance.get('totalCurrentLiabilities'))
+                    record['long_term_debt'] = self._safe_float(balance.get('longTermDebt'))
+                    record['short_term_debt'] = self._safe_float(balance.get('shortTermDebt'))
+
+                    # Calculate ratios from balance sheet
+                    if record['current_liabilities'] and record['current_liabilities'] != 0:
+                        record['current_ratio'] = record['current_assets'] / record['current_liabilities']
+                    else:
+                        record['current_ratio'] = None
+
+                    if record['shareholders_equity'] and record['shareholders_equity'] != 0:
+                        total_debt = (record.get('long_term_debt') or 0) + (record.get('short_term_debt') or 0)
+                        record['debt_to_equity'] = total_debt / record['shareholders_equity']
+                    else:
+                        record['debt_to_equity'] = None
+                else:
+                    record['total_assets'] = None
+                    record['total_liabilities'] = None
+                    record['shareholders_equity'] = None
+                    record['current_ratio'] = None
+                    record['debt_to_equity'] = None
+
+                # Extract from cash flow
+                if date_str in quarterly_cashflow:
+                    cashflow = quarterly_cashflow[date_str]
+                    record['operating_cash_flow'] = self._safe_float(cashflow.get('operatingCashflow'))
+                    record['capital_expenditure'] = self._safe_float(cashflow.get('capitalExpenditures'))
+                else:
+                    record['operating_cash_flow'] = None
+                    record['capital_expenditure'] = None
+
+                # Quick ratio (if available)
+                record['quick_ratio'] = None  # Alpha Vantage doesn't provide this directly
+
+                # Add publication date (estimate: 45 days after quarter end)
+                record['public_date'] = record['date'] + pd.Timedelta(days=45)
+
+                records.append(record)
+
+            df = pd.DataFrame(records)
+            df = df.sort_values('date')
+
+            logger.info(f"Fetched {len(df)} quarters for {symbol} (from {df['date'].min()} to {df['date'].max()})")
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Error fetching Alpha Vantage data for {symbol}: {type(e).__name__}: {str(e)}")
+            return None
+
+    @staticmethod
+    def _safe_float(value) -> Optional[float]:
+        """Safely convert value to float"""
+        if value is None or value == 'None' or value == '':
+            return None
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+
     def save_parquet(self, data_dict: Dict[str, pd.DataFrame]):
         """
         Save fundamental data to parquet files
@@ -255,7 +417,10 @@ class FundamentalsIngester:
         for symbol in tqdm(symbols, desc="Updating fundamentals"):
             try:
                 # Fetch new data
-                new_data = self._fetch_symbol_fundamentals(symbol, [])
+                if self.provider == "alpha_vantage":
+                    new_data = self._fetch_alpha_vantage_fundamentals(symbol, [])
+                else:
+                    new_data = self._fetch_symbol_fundamentals(symbol, [])
 
                 if new_data is not None and not new_data.empty:
                     symbol_path = self.storage_path / f"{symbol}.parquet"

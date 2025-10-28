@@ -37,6 +37,21 @@ python run_core_pipeline.py --dry-run
 python run_core_pipeline.py --validate-only
 ```
 
+### Daily Data Updates (Incremental)
+
+For daily operations, you don't need to re-download all historical data. Use incremental updates:
+
+```bash
+# Update only new OHLCV bars and latest fundamental quarters
+python scripts/daily_update_data.py
+
+# Or manually update fundamentals only
+python scripts/update_fundamentals.py
+
+# Or update specific symbols
+python scripts/update_fundamentals.py --symbols AAPL MSFT GOOGL
+```
+
 ### Run Enhancements (Steps 12-15)
 
 ```bash
@@ -59,7 +74,7 @@ python run_enhancements.py --steps 12,14
 
 | Step | Module | Description | Output |
 |------|--------|-------------|--------|
-| 1 | Data Ingestion | Fetch OHLCV + fundamentals from yfinance | `data/parquet/1d/*.parquet`, `data/fundamentals/*.parquet` |
+| 1 | Data Ingestion | Fetch OHLCV + fundamentals (yfinance or Alpha Vantage) | `data/parquet/1d/*.parquet`, `data/fundamentals/*.parquet` |
 | 2 | Preprocessing | Load and align OHLCV data | In-memory DataFrame |
 | 3 | Technical Features | RSI, MACD, momentum, volatility, etc. | Enhanced DataFrame |
 | 4 | Fundamental Features | P/E, ROE, debt ratios with PIT alignment | Enhanced DataFrame |
@@ -200,11 +215,27 @@ python run_enhancements.py --validate-core
 ### Production Daily Run
 
 ```bash
-# Morning: Run core pipeline
-python run_core_pipeline.py --symbols 200 2>&1 | tee logs/daily_run.log
+# Morning: Update data incrementally (faster, only fetches new data)
+python scripts/daily_update_data.py 2>&1 | tee logs/daily_update.log
+
+# Run core pipeline (skip Step 1 since data is already updated)
+python run_core_pipeline.py --skip 1 --symbols 200 2>&1 | tee logs/daily_run.log
 
 # Afternoon: Run enhancements with monitoring
 python run_enhancements.py --email-summary --validate-core
+```
+
+### Initial Setup (First Time Only)
+
+```bash
+# 1. Fetch full historical OHLCV data (10 years)
+python run_core_pipeline.py --steps 1,2
+
+# 2. Fetch full historical fundamental data (20 years with Alpha Vantage)
+python scripts/reingest_fundamentals_alphavantage.py
+
+# 3. Run full pipeline
+python run_core_pipeline.py --skip 1
 ```
 
 ### Testing Specific Features
@@ -237,6 +268,47 @@ The ops monitoring module (Step 15) includes:
 - Email/Slack alerts (configurable)
 - HTML ops report generation
 
+## Data Ingestion Strategies
+
+### Full Re-ingestion vs Incremental Updates
+
+**Full Re-ingestion** (Use for: initial setup, data corruption recovery, provider changes)
+```bash
+# Re-download ALL historical data (slow, ~15-60 min depending on symbols)
+python scripts/reingest_fundamentals_alphavantage.py
+python run_core_pipeline.py --steps 1
+```
+
+**Incremental Updates** (Use for: daily operations, after market close)
+```bash
+# Update only NEW data since last fetch (fast, ~1-5 min)
+python scripts/daily_update_data.py
+```
+
+### Fundamental Data Providers
+
+The system now supports two fundamental data providers:
+
+| Provider | Historical Coverage | Rate Limits | Configuration |
+|----------|-------------------|-------------|---------------|
+| **yfinance** | 5 quarters (~1.25 years) | None (free) | `fundamentals.provider: "yfinance"` |
+| **Alpha Vantage** | 81 quarters (~20 years) | ~5 calls/min (free tier) | `fundamentals.provider: "alpha_vantage"` |
+
+**Switching Providers**:
+1. Edit `config/config.yaml` and change `fundamentals.provider`
+2. Run full re-ingestion: `python scripts/reingest_fundamentals_alphavantage.py`
+
+**Daily Updates** automatically use the configured provider from `config.yaml`.
+
+### Update Methods
+
+The `FundamentalsIngester` class provides two methods:
+
+1. **`fetch_fundamentals(symbols)`** - Full fetch (replaces all data)
+2. **`update_data(symbols)`** - Incremental merge (adds new quarters, keeps old)
+
+Daily scripts use `update_data()` for efficiency.
+
 ## Point-in-Time (PIT) Alignment
 
 Fundamental features respect publication dates via `src/features/fa_features.py`:
@@ -258,17 +330,51 @@ All existing dependencies from `environment.yml` plus:
 - loguru (for enhanced logging)
 - hmmlearn (optional, for HMM regime detection)
 
+## Available Scripts
+
+The `scripts/` directory contains utility scripts for data management:
+
+| Script | Purpose | When to Use |
+|--------|---------|-------------|
+| `daily_update_data.py` | Incremental update of OHLCV + fundamentals | Daily, after market close |
+| `update_fundamentals.py` | Update only fundamentals (with optional symbol filter) | When you need to refresh specific symbols |
+| `reingest_fundamentals_alphavantage.py` | Full re-download of all fundamental history | Initial setup, provider change, data corruption |
+
+**Example Usage**:
+```bash
+# Daily incremental update (recommended)
+# Can be run from project root OR from scripts/ directory
+python scripts/daily_update_data.py
+# OR: cd scripts && python daily_update_data.py
+
+# Update specific symbols only
+python scripts/update_fundamentals.py --symbols AAPL MSFT TSLA
+# OR: cd scripts && python update_fundamentals.py --symbols AAPL MSFT TSLA
+
+# Full re-ingestion (initial setup)
+python scripts/reingest_fundamentals_alphavantage.py
+# OR: cd scripts && python reingest_fundamentals_alphavantage.py
+```
+
+**Note**: All scripts automatically detect and change to the project root directory, so they work correctly regardless of where you run them from.
+
 ## File Structure
 
 ```
 project_root/
-├── run_core_pipeline.py          # Core orchestrator (steps 1-11)
+├── run_core_pipeline.py           # Core orchestrator (steps 1-11)
 ├── run_enhancements.py            # Enhancements orchestrator (steps 12-15)
+├── scripts/                       # Data management scripts
+│   ├── daily_update_data.py       # Incremental OHLCV + fundamentals update
+│   ├── update_fundamentals.py     # Incremental fundamentals update
+│   └── reingest_fundamentals_alphavantage.py  # Full fundamental re-ingestion
 ├── config/
 │   └── config.yaml                # Enhanced configuration
 ├── src/
 │   ├── io/
-│   │   └── results_saver.py       # New: artifact management
+│   │   ├── ingest_ohlcv.py        # OHLCV data ingestion
+│   │   ├── ingest_fundamentals.py # Fundamental data ingestion (yfinance/Alpha Vantage)
+│   │   └── results_saver.py       # Artifact management
 │   ├── portfolio/
 │   │   ├── regime_detection.py    # New: step 12
 │   │   ├── sleeve_allocation.py   # New: step 13
@@ -281,6 +387,8 @@ project_root/
 │   ├── pipeline_utils.py          # New: helper functions
 │   └── cli_parser.py              # New: CLI parsing
 ├── data/
+│   ├── parquet/1d/                # OHLCV data (partitioned by symbol)
+│   ├── fundamentals/              # Fundamental data (partitioned by symbol)
 │   ├── features/                  # Artifact 1
 │   ├── results/                   # Artifacts 2-4, 6-9
 │   └── models/                    # Artifact 5
@@ -318,14 +426,52 @@ python run_core_pipeline.py --symbols 30
 # Limit rebalance dates (edit MAX_DATES in step 9)
 ```
 
+### Data Update Issues
+
+**No new data appearing**:
+```bash
+# Check existing data date range
+python -c "import pandas as pd; df=pd.read_parquet('data/parquet/1d/AAPL.parquet'); print(df['date'].min(), df['date'].max())"
+
+# Force full re-ingestion for one symbol
+python scripts/update_fundamentals.py --symbols AAPL
+```
+
+**Alpha Vantage rate limit errors**:
+- Free tier: ~5 API calls per minute
+- Each symbol needs 4 calls (income, balance, cashflow, overview)
+- Solution: Wait 1 minute between symbols, or upgrade to premium tier
+- The ingester automatically adds 0.3s delays between calls
+
+**Stale fundamental data**:
+```bash
+# Check fundamental data dates
+python -c "import pandas as pd; df=pd.read_parquet('data/fundamentals/AAPL.parquet'); print(df[['date', 'public_date']].tail())"
+
+# Full re-ingestion to get latest quarters
+python scripts/reingest_fundamentals_alphavantage.py
+```
+
 ## Next Steps
 
-1. **Test Core Pipeline**: Run `python run_core_pipeline.py` and verify 5 artifacts
-2. **Test Enhancements**: Run `python run_enhancements.py` and verify 4 artifacts
-3. **Configure Email Alerts**: Update `ops.email_recipients` in config.yaml
-4. **Customize Regime Detection**: Adjust thresholds in `config.yaml`
-5. **Integrate Crypto Data**: Add crypto data sources for sleeve allocation
-6. **Set Up Cron Jobs**: Schedule daily/weekly pipeline runs
+1. **Initial Data Setup** (First time only):
+   - Configure fundamental provider in `config/config.yaml` (yfinance or Alpha Vantage)
+   - Run full data ingestion: `python run_core_pipeline.py --steps 1`
+   - For extended history: `python scripts/reingest_fundamentals_alphavantage.py`
+
+2. **Test Core Pipeline**: Run `python run_core_pipeline.py` and verify 5 artifacts
+
+3. **Set Up Daily Updates**:
+   - Create cron job: `0 17 * * 1-5 cd /path/to/project && python scripts/daily_update_data.py`
+   - Run pipeline after update: `python run_core_pipeline.py --skip 1`
+
+4. **Test Enhancements**: Run `python run_enhancements.py` and verify 4 artifacts
+
+5. **Configure Email Alerts**: Update `ops.email_recipients` in config.yaml
+
+6. **Customize Regime Detection**: Adjust thresholds in `config.yaml`
+
+7. **Integrate Crypto Data**: Add crypto data sources for sleeve allocation
 
 ## Support
 
