@@ -67,3 +67,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+data/simfin_data/
+data/parquet
+data/simfin_data/
