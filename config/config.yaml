@@ -24,9 +24,17 @@ ingest:
 
 # Fundamental data ingestion
 fundamentals:
-  provider: "alpha_vantage"  # yfinance (5 quarters) or alpha_vantage (80+ quarters)
+  provider: "simfin"  # yfinance (5 quarters), alpha_vantage (80+ quarters), or simfin (20+ years)
+  
+  simfin:
+    api_key: ${SIMFIN_API_KEY}  # Set in .env file or environment variable
+    data_dir: "data/simfin_data"  # Local cache directory for SimFin data
+    market: "us"  # US market
+    variant: "quarterly"  # quarterly or annual
+    include_banks_insurance: false  # Set to true to include specialized datasets for banks/insurance
+
   alpha_vantage:
-    api_key: "***REMOVED***"  # Get free key at https://www.alphavantage.co/support/#api-key
+    api_key: ${ALPHA_VANTAGE_API_KEY}  # Set in .env file or environment variable
     rate_limit_sleep: 0.3  # Seconds between API calls (free tier: ~5 calls/min)
 
 # Universe selection
