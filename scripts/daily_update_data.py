@@ -21,6 +21,63 @@ from loguru import logger
 from src.io.ingest_ohlcv import OHLCVIngester
 from src.io.ingest_fundamentals import FundamentalsIngester
 
+
+def select_provider(cfg: dict) -> tuple:
+    """
+    Interactive provider selection for fundamental data
+    
+    Returns:
+        tuple: (provider, api_key, simfin_data_dir, simfin_market, simfin_variant)
+    """
+    print("\n" + "="*70)
+    print("Select fundamental data provider:")
+    print("="*70)
+    print("1. SimFin (paid tier, 20+ years history, bulk loading)")
+    print("2. Alpha Vantage (free tier, rate limited, 20 years)")
+    print("3. yfinance (free, limited to ~5 quarters)")
+    print("4. Use default from config.yaml")
+    print("="*70)
+    
+    choice = input("\nEnter choice (1-4) [default: 4]: ").strip() or '4'
+    
+    provider_map = {
+        '1': 'simfin',
+        '2': 'alpha_vantage',
+        '3': 'yfinance',
+        '4': None  # Use config default
+    }
+    
+    provider = provider_map.get(choice)
+    
+    if provider is None:
+        # Load from config
+        provider = cfg.get('fundamentals', {}).get('provider', 'yfinance')
+        logger.info(f"Using provider from config: {provider}")
+    
+    # Get provider-specific settings
+    api_key = None
+    simfin_data_dir = None
+    simfin_market = 'us'
+    simfin_variant = 'quarterly'
+    
+    if provider == 'simfin':
+        simfin_cfg = cfg.get('fundamentals', {}).get('simfin', {})
+        api_key = simfin_cfg.get('api_key')
+        simfin_data_dir = simfin_cfg.get('data_dir', 'data/simfin_data')
+        simfin_market = simfin_cfg.get('market', 'us')
+        simfin_variant = simfin_cfg.get('variant', 'quarterly')
+        
+        if api_key == "your-simfin-api-key-here":
+            logger.error("Please set your SimFin API key in config/config.yaml")
+            sys.exit(1)
+    
+    elif provider == 'alpha_vantage':
+        api_key = cfg.get('fundamentals', {}).get('alpha_vantage', {}).get('api_key')
+    
+    logger.info(f"Selected provider: {provider}")
+    return provider, api_key, simfin_data_dir, simfin_market, simfin_variant
+
+
 def main():
     start_time = datetime.now()
     logger.info("="*70)
@@ -91,24 +148,35 @@ def main():
     # =========================================================================
     logger.info("\n[2/2] Updating fundamental data...")
 
-    fund_config = cfg.get('fundamentals', {})
-    provider = fund_config.get('provider', 'yfinance')
-    api_key = None
-    if provider == 'alpha_vantage':
-        api_key = fund_config.get('alpha_vantage', {}).get('api_key')
+    # Select provider (interactive or from config)
+    provider, api_key, simfin_data_dir, simfin_market, simfin_variant = select_provider(cfg)
 
     fund_ingester = FundamentalsIngester(
         storage_path=cfg['data']['fundamentals'],
         provider=provider,
-        api_key=api_key
+        api_key=api_key,
+        simfin_data_dir=simfin_data_dir,
+        simfin_market=simfin_market,
+        simfin_variant=simfin_variant
     )
 
     try:
         logger.info(f"Updating fundamentals using {provider}...")
-        fund_ingester.update_data(symbols)
+        
+        # For SimFin, use bulk fetch (more efficient)
+        if provider == 'simfin':
+            logger.info("Using SimFin bulk loading (efficient)...")
+            data_dict = fund_ingester.fetch_fundamentals(symbols)
+            fund_ingester.save_parquet(data_dict)
+        else:
+            # For other providers, use update_data method
+            fund_ingester.update_data(symbols)
+        
         logger.info("✓ Fundamental data updated")
     except Exception as e:
         logger.error(f"Fundamental update failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     # =========================================================================
     # Summary

@@ -10,33 +10,309 @@ import time
 from loguru import logger
 from tqdm import tqdm
 
+# SimFin imports (optional)
+try:
+    import simfin as sf
+    from simfin.names import TICKER, REPORT_DATE, PUBLISH_DATE
+    SIMFIN_AVAILABLE = True
+except ImportError:
+    SIMFIN_AVAILABLE = False
+    logger.warning("SimFin package not available. Install with: pip install simfin")
+
 
 class FundamentalsIngester:
     """Ingest fundamental data from providers"""
+    
+    # SimFin column mapping to standard schema
+    SIMFIN_COLUMN_MAP = {
+        # Income Statement
+        'Revenue': 'revenue',
+        'Net Income': 'net_income',
+        'Gross Profit': 'gross_profit',
+        'Operating Income (Loss)': 'operating_income',
+        'Pretax Income (Loss)': 'pretax_income',
+        
+        # Balance Sheet
+        'Total Assets': 'total_assets',
+        'Total Liabilities': 'total_liabilities',
+        'Total Equity': 'shareholders_equity',
+        'Total Current Assets': 'current_assets',
+        'Total Current Liabilities': 'current_liabilities',
+        'Total Noncurrent Assets': 'noncurrent_assets',
+        'Total Noncurrent Liabilities': 'noncurrent_liabilities',
+        
+        # Cash Flow
+        'Net Cash from Operating Activities': 'operating_cash_flow',
+        'Net Cash from Investing Activities': 'investing_cash_flow',
+        'Net Cash from Financing Activities': 'financing_cash_flow',
+        'Net Change in Cash': 'net_change_in_cash',
+    }
 
     def __init__(
         self,
         storage_path: str = "data/fundamentals",
         provider: str = "yfinance",
-        api_key: Optional[str] = None
+        api_key: Optional[str] = None,
+        simfin_data_dir: Optional[str] = None,
+        simfin_market: str = "us",
+        simfin_variant: str = "quarterly"
     ):
         """
         Initialize fundamentals ingester
 
         Args:
             storage_path: Path to store fundamental data
-            provider: Data provider ('yfinance' or 'alpha_vantage')
-            api_key: API key for provider (required for alpha_vantage)
+            provider: Data provider ('yfinance', 'alpha_vantage', or 'simfin')
+            api_key: API key for provider (required for alpha_vantage and simfin)
+            simfin_data_dir: Data directory for SimFin cache
+            simfin_market: Market for SimFin ('us', 'de', etc.)
+            simfin_variant: Variant for SimFin ('quarterly' or 'annual')
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.provider = provider.lower()
         self.api_key = api_key
+        self.simfin_market = simfin_market
+        self.simfin_variant = simfin_variant
 
         if self.provider == "alpha_vantage" and not self.api_key:
             raise ValueError("API key required for Alpha Vantage provider")
+        
+        if self.provider == "simfin":
+            if not SIMFIN_AVAILABLE:
+                raise ImportError(
+                    "SimFin package not installed. Install with: pip install simfin"
+                )
+            if not self.api_key:
+                raise ValueError("API key required for SimFin provider")
+            
+            # Initialize SimFin
+            self._initialize_simfin(simfin_data_dir)
 
         logger.info(f"Initialized FundamentalsIngester with storage_path={storage_path}, provider={provider}")
+    
+    def _initialize_simfin(self, data_dir: Optional[str] = None):
+        """Initialize SimFin API configuration"""
+        try:
+            # Set API key
+            sf.set_api_key(self.api_key)
+            
+            # Set data directory for caching
+            if data_dir is None:
+                data_dir = "data/simfin_data"
+            
+            data_dir_path = Path(data_dir)
+            data_dir_path.mkdir(parents=True, exist_ok=True)
+            sf.set_data_dir(str(data_dir_path))
+            
+            logger.info(f"SimFin initialized with data_dir={data_dir}")
+        except Exception as e:
+            logger.error(f"Failed to initialize SimFin: {e}")
+            raise
+
+    def _fetch_simfin_fundamentals(
+        self,
+        symbols: List[str]
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch fundamentals from SimFin (bulk loading for efficiency)
+        
+        Args:
+            symbols: List of symbols to fetch
+            
+        Returns:
+            Dictionary of {symbol: DataFrame} with fundamental data
+        """
+        try:
+            logger.info(f"Loading SimFin data for {len(symbols)} symbols...")
+            
+            # Load all datasets at once (SimFin caches these locally)
+            logger.info("Loading income statements...")
+            df_income = sf.load_income(variant=self.simfin_variant, market=self.simfin_market)
+            
+            logger.info("Loading balance sheets...")
+            df_balance = sf.load_balance(variant=self.simfin_variant, market=self.simfin_market)
+            
+            logger.info("Loading cash flow statements...")
+            df_cashflow = sf.load_cashflow(variant=self.simfin_variant, market=self.simfin_market)
+            
+            # Try to load derived metrics (optional)
+            try:
+                logger.info("Loading derived metrics...")
+                df_derived = sf.load_derived(variant=self.simfin_variant, market=self.simfin_market)
+            except Exception as e:
+                logger.warning(f"Could not load derived metrics: {e}")
+                df_derived = None
+            
+            # Filter to requested symbols
+            df_income = df_income[df_income.index.get_level_values(TICKER).isin(symbols)]
+            df_balance = df_balance[df_balance.index.get_level_values(TICKER).isin(symbols)]
+            df_cashflow = df_cashflow[df_cashflow.index.get_level_values(TICKER).isin(symbols)]
+            if df_derived is not None:
+                df_derived = df_derived[df_derived.index.get_level_values(TICKER).isin(symbols)]
+            
+            # Process each symbol
+            data_dict = {}
+            for symbol in tqdm(symbols, desc="Processing SimFin data"):
+                try:
+                    df = self._merge_simfin_datasets(
+                        symbol, df_income, df_balance, df_cashflow, df_derived
+                    )
+                    if df is not None and not df.empty:
+                        data_dict[symbol] = df
+                        logger.debug(f"Processed {len(df)} periods for {symbol}")
+                except Exception as e:
+                    logger.error(f"Failed to process {symbol}: {e}")
+            
+            return data_dict
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch SimFin data: {e}")
+            raise
+    
+    def _merge_simfin_datasets(
+        self,
+        symbol: str,
+        df_income: pd.DataFrame,
+        df_balance: pd.DataFrame,
+        df_cashflow: pd.DataFrame,
+        df_derived: Optional[pd.DataFrame] = None
+    ) -> Optional[pd.DataFrame]:
+        """
+        Merge SimFin datasets for a single symbol into standardized format
+        
+        Args:
+            symbol: Stock ticker
+            df_income: Income statement data
+            df_balance: Balance sheet data
+            df_cashflow: Cash flow data
+            df_derived: Derived metrics (optional)
+            
+        Returns:
+            Merged DataFrame in standard schema
+        """
+        try:
+            # Extract data for this symbol
+            if symbol not in df_income.index.get_level_values(TICKER):
+                logger.warning(f"No income data for {symbol}")
+                return None
+            
+            income = df_income.loc[symbol].copy()
+            balance = df_balance.loc[symbol].copy() if symbol in df_balance.index.get_level_values(TICKER) else pd.DataFrame()
+            cashflow = df_cashflow.loc[symbol].copy() if symbol in df_cashflow.index.get_level_values(TICKER) else pd.DataFrame()
+            derived = df_derived.loc[symbol].copy() if df_derived is not None and symbol in df_derived.index.get_level_values(TICKER) else pd.DataFrame()
+            
+            # Reset index to get dates as column
+            income = income.reset_index()
+            balance = balance.reset_index() if not balance.empty else balance
+            cashflow = cashflow.reset_index() if not cashflow.empty else cashflow
+            derived = derived.reset_index() if not derived.empty else derived
+            
+            # Merge on Report Date
+            merged = income.copy()
+            if not balance.empty:
+                merged = merged.merge(balance, on=REPORT_DATE, how='outer', suffixes=('', '_balance'))
+            if not cashflow.empty:
+                merged = merged.merge(cashflow, on=REPORT_DATE, how='outer', suffixes=('', '_cashflow'))
+            if not derived.empty:
+                merged = merged.merge(derived, on=REPORT_DATE, how='outer', suffixes=('', '_derived'))
+            
+            # Standardize column names
+            merged = self._map_simfin_columns(merged)
+            
+            # Add symbol column
+            merged['symbol'] = symbol
+            
+            # Rename date columns
+            if REPORT_DATE in merged.columns:
+                merged['date'] = pd.to_datetime(merged[REPORT_DATE])
+            
+            # Handle publish date
+            if PUBLISH_DATE in merged.columns:
+                merged['public_date'] = pd.to_datetime(merged[PUBLISH_DATE])
+            else:
+                # Estimate: 45 days after report date
+                merged['public_date'] = merged['date'] + pd.Timedelta(days=45)
+            
+            # Add period type
+            merged['period_type'] = self.simfin_variant
+            
+            # Calculate derived metrics if not present
+            merged = self._calculate_derived_metrics(merged)
+            
+            # Select and order columns
+            standard_cols = [
+                'symbol', 'date', 'public_date', 'period_type',
+                'revenue', 'net_income', 'gross_profit', 'operating_income',
+                'total_assets', 'total_liabilities', 'shareholders_equity',
+                'current_assets', 'current_liabilities',
+                'operating_cash_flow', 'investing_cash_flow', 'financing_cash_flow',
+                'current_ratio', 'debt_to_equity', 'roe', 'roa',
+                'pe_ratio', 'pb_ratio', 'ps_ratio', 'ev_ebitda', 'quick_ratio'
+            ]
+            
+            # Keep only columns that exist
+            available_cols = [col for col in standard_cols if col in merged.columns]
+            merged = merged[available_cols]
+            
+            # Sort by date
+            merged = merged.sort_values('date')
+            
+            return merged
+            
+        except Exception as e:
+            logger.error(f"Failed to merge datasets for {symbol}: {e}")
+            return None
+    
+    def _map_simfin_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Map SimFin column names to standard schema
+        
+        Args:
+            df: DataFrame with SimFin columns
+            
+        Returns:
+            DataFrame with standardized column names
+        """
+        # Rename columns based on mapping
+        df = df.rename(columns=self.SIMFIN_COLUMN_MAP)
+        return df
+    
+    def _calculate_derived_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate derived financial metrics
+        
+        Args:
+            df: DataFrame with fundamental data
+            
+        Returns:
+            DataFrame with calculated metrics
+        """
+        # Current ratio
+        if 'current_ratio' not in df.columns or df['current_ratio'].isna().all():
+            if 'current_assets' in df.columns and 'current_liabilities' in df.columns:
+                df['current_ratio'] = df['current_assets'] / df['current_liabilities']
+                df['current_ratio'] = df['current_ratio'].replace([float('inf'), -float('inf')], None)
+        
+        # Debt to equity
+        if 'debt_to_equity' not in df.columns or df['debt_to_equity'].isna().all():
+            if 'total_liabilities' in df.columns and 'shareholders_equity' in df.columns:
+                df['debt_to_equity'] = df['total_liabilities'] / df['shareholders_equity']
+                df['debt_to_equity'] = df['debt_to_equity'].replace([float('inf'), -float('inf')], None)
+        
+        # ROE (Return on Equity)
+        if 'roe' not in df.columns or df['roe'].isna().all():
+            if 'net_income' in df.columns and 'shareholders_equity' in df.columns:
+                df['roe'] = df['net_income'] / df['shareholders_equity']
+                df['roe'] = df['roe'].replace([float('inf'), -float('inf')], None)
+        
+        # ROA (Return on Assets)
+        if 'roa' not in df.columns or df['roa'].isna().all():
+            if 'net_income' in df.columns and 'total_assets' in df.columns:
+                df['roa'] = df['net_income'] / df['total_assets']
+                df['roa'] = df['roa'].replace([float('inf'), -float('inf')], None)
+        
+        return df
 
     def fetch_fundamentals(
         self,
@@ -61,8 +337,12 @@ class FundamentalsIngester:
                 'total_liabilities', 'shareholders_equity', 'operating_cash_flow'
             ]
 
+        # Use SimFin bulk loading if provider is simfin
+        if self.provider == "simfin":
+            return self._fetch_simfin_fundamentals(symbols)
+        
+        # For other providers, fetch symbol by symbol
         data_dict = {}
-
         logger.info(f"Fetching fundamentals for {len(symbols)} symbols")
 
         for symbol in tqdm(symbols, desc="Fetching fundamentals"):
