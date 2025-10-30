@@ -235,20 +235,76 @@ backtest:
   # Reporting
   benchmark: "SPY"  # Compare to S&P 500
 
-# Live operations
+# Live Operations (Production Trading) - NEW: Option A
 live:
-  enabled: false
-  dry_run: true  # Simulate trades without execution
-  execution_time: "09:35"  # EST, after market open
+  enabled: false  # Set to true when ready for production
+  dry_run: true   # Default to dry-run (no real trades)
+
+  # Model
+  champion_model_path: "production/champion_model.pkl"
+  fallback_model_path: "data/models/latest/model.pkl"
+
+  # Portfolio
+  initial_capital: 100000  # Starting capital in USD
+  positions_file: "live/current_positions.csv"
 
   # Trade execution
-  broker: null  # alpaca, interactive_brokers, etc.
+  min_trade_size: 100      # Minimum trade in USD
+  max_position_pct: 0.15   # Max 15% per position
+  max_volume_pct: 0.05     # Trade max 5% of daily volume
 
-  # Monitoring
-  alerts:
+  # Regime adaptation
+  enable_regime_adaptation: true
+
+  # Outputs
+  output_dir: "live"
+  save_trade_history: true
+
+  # Safety checks
+  safety:
+    validate_before_trade: true
+    require_manual_approval: true  # Human must approve trades
+    max_daily_trades: 50
+
+  # Notifications
+  notifications:
+    enabled: false
+    method: "email"  # email, slack, webhook
+    email_recipients: []
+    send_on_kill_switch: true
+    send_daily_summary: false
+
+# Operations Monitoring - NEW: Option A
+ops:
+  # Performance tracking
+  track_ic: true
+  ic_lookback_days: 20
+  ic_alert_threshold: 0.02
+
+  # Kill-switch
+  kill_switch:
     enabled: true
-    email: null  # Email for alerts
-    slack_webhook: null  # Slack webhook URL
+    max_daily_loss_pct: 0.03      # Halt if lose > 3% in one day
+    min_live_sharpe_threshold: 0.5
+    min_live_sharpe_lookback_weeks: 6
+
+  # Alerts
+  alerts: "email"  # email, slack, none
+  email_recipients: []
+
+  # Reporting
+  generate_daily_report: true
+  report_output_dir: "live"
+
+# Risk Management - NEW: Option A
+risk:
+  max_sector_weight: 0.30    # Max 30% in any sector
+  max_market_cap_weight:
+    large_cap: 0.70          # Min 30% in large cap
+    mid_cap: 0.25            # Max 25% in mid cap
+    small_cap: 0.05          # Max 5% in small cap
+
+  rebalance_threshold: 0.05  # Rebalance if drift > 5%
 
 # Logging
 logging:
