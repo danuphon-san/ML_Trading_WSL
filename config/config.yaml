@@ -188,6 +188,37 @@ portfolio:
   max_turnover: 0.35  # Alert if turnover exceeds 35%
   max_leverage: 1.0   # Long-only (1.0), allow leverage (>1.0)
 
+# Regime Detection (Adaptive Portfolio Management)
+regime:
+  # Detection method
+  method: "rules"  # 'rules' (faster, interpretable) or 'hmm' (data-driven, requires hmmlearn)
+
+  # Volatility thresholds (annualized)
+  vol_window: 20  # Rolling window for volatility calculation (days)
+  vol_threshold_high: 0.25  # > 25% annualized vol = high volatility regime
+  vol_threshold_low: 0.15   # < 15% annualized vol = low volatility regime
+
+  # Drawdown threshold
+  dd_threshold: -0.10  # -10% drawdown triggers risk-off regime
+
+  # Trend detection
+  trend_window: 50  # SMA window for trend detection (days)
+
+  # Risk multipliers (applied to position sizes)
+  # Risk-Off (regime 0): Reduce exposure to 50%
+  # Normal (regime 1):    Full exposure (100%)
+  # Risk-On (regime 2):   Increase exposure to 120% (capped)
+  risk_multipliers:
+    risk_off: 0.5   # 50% exposure in stressed markets
+    normal: 1.0     # 100% exposure in normal conditions
+    risk_on: 1.2    # 120% exposure in favorable conditions
+
+  # Top-K adjustment factors (applied to portfolio.top_k)
+  top_k_multipliers:
+    risk_off: 0.6   # Concentrate: 60% of normal top_k (defensive stocks)
+    normal: 1.0     # No change
+    risk_on: 1.3    # Diversify: 130% of normal top_k (capped at 50)
+
 # Backtesting
 backtest:
   start_date: "2018-01-01"
