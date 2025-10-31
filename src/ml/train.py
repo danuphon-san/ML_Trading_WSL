@@ -570,7 +570,7 @@ class ModelTrainer:
                 metrics = self._compute_metrics(inner_y_val, predictions)
                 score = metrics[metric]
 
-                if not np.isfinite(score) or score == 0.0:
+                if not np.isfinite(score):
                     raise optuna.exceptions.TrialPruned(f"Metric {metric} is invalid ({score})")
 
                 trial.set_user_attr('metrics', metrics)
