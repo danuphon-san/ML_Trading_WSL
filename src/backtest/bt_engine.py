@@ -1,9 +1,8 @@
 """
 Vectorized backtest engine with realistic costs
 """
-import numpy as np
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
 from src.portfolio.risk import calculate_portfolio_metrics, calculate_turnover
@@ -46,6 +45,8 @@ class VectorizedBacktester:
         self.equity_curve = []
         self.trades = []
         self.positions = []
+        self._close_price_matrix: Optional[pd.DataFrame] = None
+        self._open_price_matrix: Optional[pd.DataFrame] = None
 
     def run(
         self,
@@ -53,79 +54,132 @@ class VectorizedBacktester:
         price_data: pd.DataFrame
     ) -> Dict:
         """
-        Run backtest
+        Run backtest with proper execution timing and cash handling.
 
         Args:
-            weights_history: DataFrame with [date, symbol, weight]
-            price_data: DataFrame with [date, symbol, close]
+            weights_history: DataFrame with columns [date, symbol, weight]
+            price_data: DataFrame with price history. Requires 'close' and, when
+                execution_timing == 'next_open', also 'open'.
 
         Returns:
             Dictionary with backtest results
         """
         logger.info("Running vectorized backtest")
 
-        # Get unique rebalance dates
-        rebalance_dates = sorted(weights_history['date'].unique())
+        # Reset run state
+        self.equity_curve = []
+        self.trades = []
+        self.positions = []
 
-        # Initialize
-        capital = self.initial_capital
-        current_positions = {}
-        equity = [capital]
-        dates = [rebalance_dates[0]]
+        if weights_history.empty:
+            logger.warning("Weights history is empty; returning empty results")
+            self.equity_curve = pd.DataFrame(columns=['date', 'equity'])
+            return self._calculate_results(empty_ok=True)
 
-        for i, rebal_date in enumerate(rebalance_dates):
-            # Get target weights
-            target_weights = weights_history[weights_history['date'] == rebal_date].set_index('symbol')['weight'].to_dict()
+        weights_history = weights_history.copy()
+        price_data = price_data.copy()
 
-            # Get prices at rebalance
-            prices = price_data[price_data['date'] == rebal_date].set_index('symbol')['close'].to_dict()
+        weights_history['date'] = pd.to_datetime(weights_history['date'])
+        price_data['date'] = pd.to_datetime(price_data['date'])
 
-            # Calculate trades
-            trades = self._calculate_trades(current_positions, target_weights, capital, prices)
+        weights_history = weights_history.sort_values('date')
+        price_data = price_data.sort_values('date')
 
-            # Apply costs
-            if self.apply_costs:
-                cost = self._calculate_trading_costs(trades, prices)
+        # Build price matrices for fast lookup
+        self._close_price_matrix = price_data.pivot_table(
+            index='date', columns='symbol', values='close', aggfunc='last'
+        ).sort_index()
+
+        if self._close_price_matrix.empty:
+            raise ValueError("Price data must contain 'close' prices for backtesting")
+
+        if self.execution_timing == 'next_open':
+            if 'open' not in price_data.columns:
+                raise ValueError(
+                    "Price data must contain 'open' when execution_timing is 'next_open'"
+                )
+            self._open_price_matrix = price_data.pivot_table(
+                index='date', columns='symbol', values='open', aggfunc='first'
+            ).sort_index()
+        else:
+            self._open_price_matrix = None
+
+        price_calendar = self._close_price_matrix.index
+        weight_groups = {date: df for date, df in weights_history.groupby('date')}
+        rebalance_dates = sorted(weight_groups.keys())
+
+        capital = float(self.initial_capital)
+        cash = float(self.initial_capital)
+        current_positions: Dict[str, float] = {}
+        equity_records: List[Dict[str, float]] = []
+
+        for signal_date in rebalance_dates:
+            execution_date = self._determine_execution_date(signal_date, price_calendar)
+
+            if self.execution_timing == 'next_open':
+                trade_prices_series = self._get_price_series(self._open_price_matrix, execution_date)
+                valuation_date = execution_date
+            else:
+                trade_prices_series = self._get_price_series(self._close_price_matrix, execution_date)
+                valuation_date = execution_date
+
+            trade_prices = trade_prices_series.dropna().to_dict()
+            if not trade_prices:
+                raise ValueError(f"No trade prices available for execution date {execution_date}")
+
+            # Mark-to-market existing holdings at execution price to capture gap moves
+            capital = self._mark_to_market(current_positions, cash, trade_prices)
+
+            target_weights = weight_groups[signal_date].set_index('symbol')['weight'].to_dict()
+
+            trades = self._calculate_trades(current_positions, target_weights, capital, trade_prices)
+
+            if self.apply_costs and trades:
+                cost = self._calculate_trading_costs(trades, trade_prices)
+                cash -= cost
                 capital -= cost
             else:
-                cost = 0
+                cost = 0.0
 
-            # Update positions
-            current_positions = self._execute_trades(current_positions, trades, prices)
+            current_positions, cash = self._execute_trades(current_positions, trades, trade_prices, cash)
 
-            # Store
-            self.trades.extend(trades)
-            self.positions.append({
-                'date': rebal_date,
-                'positions': current_positions.copy(),
-                'capital': capital
-            })
-
-            # Update capital for next period (if not last date)
-            if i < len(rebalance_dates) - 1:
-                next_date = rebalance_dates[i + 1]
-
-                # Get returns between rebalances
-                returns = self._get_returns_between_dates(
-                    price_data,
-                    current_positions,
-                    rebal_date,
-                    next_date
+            if cash < -1e-6:
+                logger.warning(
+                    f"Cash balance negative after trades on {execution_date}: ${cash:,.2f}"
                 )
 
-                capital = capital * (1 + returns)
+            if trades:
+                trade_date = execution_date
+                for trade in trades:
+                    trade['date'] = trade_date
+            self.trades.extend(trades)
 
-            equity.append(capital)
-            dates.append(rebal_date)
+            close_prices_series = self._get_price_series(self._close_price_matrix, valuation_date)
+            close_prices = close_prices_series.dropna().to_dict()
+            invested_value = self._value_positions(current_positions, close_prices, valuation_date)
+            capital = invested_value + cash
 
-        # Build equity curve
-        self.equity_curve = pd.DataFrame({'date': dates, 'equity': equity})
+            equity_records.append({'date': valuation_date, 'equity': capital})
+            self.positions.append({
+                'date': valuation_date,
+                'positions': current_positions.copy(),
+                'capital': capital,
+                'cash': cash
+            })
 
-        # Calculate metrics
+        self.equity_curve = (
+            pd.DataFrame(equity_records)
+            .sort_values('date')
+            .drop_duplicates(subset='date', keep='last')
+            .reset_index(drop=True)
+        )
+
         results = self._calculate_results()
 
-        logger.info(f"Backtest complete: Return={results['metrics']['total_return']:.2%}, "
-                   f"Sharpe={results['metrics']['sharpe_ratio']:.2f}")
+        logger.info(
+            f"Backtest complete: Return={results['metrics']['total_return']:.2%}, "
+            f"Sharpe={results['metrics']['sharpe_ratio']:.2f}"
+        )
 
         return results
 
@@ -196,59 +250,165 @@ class VectorizedBacktester:
 
         return total_cost
 
+    def _determine_execution_date(
+        self,
+        signal_date: pd.Timestamp,
+        calendar: pd.Index
+    ) -> pd.Timestamp:
+        """Resolve the actual execution date based on configuration."""
+        if self.execution_timing == 'close':
+            if signal_date in calendar:
+                return signal_date
+            pos = calendar.searchsorted(signal_date, side='left')
+            if pos >= len(calendar):
+                raise ValueError(f"No price data on or after {signal_date}")
+            fallback = calendar[pos]
+            logger.warning(
+                f"No close price for {signal_date}; using next available date {fallback}"
+            )
+            return fallback
+
+        # next_open: use the next available trading day
+        pos = calendar.searchsorted(signal_date, side='right')
+        if pos >= len(calendar):
+            if signal_date in calendar:
+                logger.warning(
+                    f"No future open available after {signal_date}; executing at same-day close"
+                )
+                return signal_date
+            raise ValueError(f"No open price available after {signal_date}")
+
+        return calendar[pos]
+
+    def _get_price_series(
+        self,
+        price_matrix: Optional[pd.DataFrame],
+        date: pd.Timestamp
+    ) -> pd.Series:
+        """Fetch a row of prices for the given date, returning an empty series if missing."""
+        if price_matrix is None or date not in price_matrix.index:
+            return pd.Series(dtype=float)
+        return price_matrix.loc[date].astype(float)
+
+    def _mark_to_market(
+        self,
+        positions: Dict[str, float],
+        cash: float,
+        prices: Dict[str, float]
+    ) -> float:
+        """Return portfolio equity given current positions, cash, and prices."""
+        equity = cash
+        missing_symbols = []
+
+        for symbol, shares in positions.items():
+            price = prices.get(symbol)
+            if price is None or pd.isna(price):
+                missing_symbols.append(symbol)
+                continue
+            equity += shares * price
+
+        if missing_symbols:
+            logger.warning(
+                f"Missing execution prices for symbols {missing_symbols}; treating as zero value"
+            )
+
+        return float(equity)
+
+    def _value_positions(
+        self,
+        positions: Dict[str, float],
+        prices: Dict[str, float],
+        date: pd.Timestamp
+    ) -> float:
+        """Value the current holdings using the provided price dictionary."""
+        total = 0.0
+        missing = []
+
+        for symbol, shares in positions.items():
+            price = prices.get(symbol)
+            if price is None or pd.isna(price):
+                missing.append(symbol)
+                continue
+            total += shares * price
+
+        if missing:
+            logger.warning(
+                f"Missing close prices for symbols {missing} on {date}; assuming zero"
+            )
+
+        return float(total)
+
     def _execute_trades(
         self,
         current_positions: Dict[str, float],
         trades: List[Dict],
-        prices: Dict[str, float]
-    ) -> Dict[str, float]:
-        """Execute trades and update positions"""
+        prices: Dict[str, float],
+        cash: float
+    ) -> Tuple[Dict[str, float], float]:
+        """Execute trades, update positions, and return updated cash."""
         new_positions = current_positions.copy()
+        new_cash = cash
 
         for trade in trades:
             symbol = trade['symbol']
-            current = new_positions.get(symbol, 0)
-            new_positions[symbol] = current + trade['shares']
+            shares = trade['shares']
+            price = prices.get(symbol)
 
-            # Remove zero positions
-            if abs(new_positions[symbol]) < 0.01:
+            if price is None or pd.isna(price):
+                logger.warning(f"Skipping trade for {symbol}: missing execution price")
+                continue
+
+            current = new_positions.get(symbol, 0.0)
+            new_positions[symbol] = current + shares
+
+            # Cash impact: positive shares consume cash, negative shares release cash
+            new_cash -= shares * price
+
+            if abs(new_positions[symbol]) < 1e-6:
                 new_positions.pop(symbol, None)
 
-        return new_positions
+        return new_positions, float(new_cash)
 
-    def _get_returns_between_dates(
-        self,
-        price_data: pd.DataFrame,
-        positions: Dict[str, float],
-        start_date: pd.Timestamp,
-        end_date: pd.Timestamp
-    ) -> float:
-        """Calculate portfolio return between dates"""
-        if not positions:
-            return 0.0
-
-        # Get prices at start and end
-        start_prices = price_data[price_data['date'] == start_date].set_index('symbol')['close']
-        end_prices = price_data[price_data['date'] == end_date].set_index('symbol')['close']
-
-        # Calculate portfolio value change
-        start_value = sum(positions[s] * start_prices.get(s, 0) for s in positions.keys())
-        end_value = sum(positions[s] * end_prices.get(s, 0) for s in positions.keys())
-
-        if start_value == 0:
-            return 0.0
-
-        return (end_value - start_value) / start_value
-
-    def _calculate_results(self) -> Dict:
+    def _calculate_results(self, empty_ok: bool = False) -> Dict:
         """Calculate backtest results"""
-        # Calculate returns
         equity_curve = self.equity_curve.copy()
+
+        if equity_curve.empty:
+            if empty_ok:
+                metrics = {
+                    'total_return': 0.0,
+                    'annual_return': 0.0,
+                    'volatility': 0.0,
+                    'sharpe_ratio': 0.0,
+                    'sortino_ratio': 0.0,
+                    'max_drawdown': 0.0,
+                    'calmar_ratio': 0.0,
+                    'avg_turnover': 0.0
+                }
+                return {
+                    'equity_curve': equity_curve,
+                    'metrics': metrics,
+                    'trades': pd.DataFrame(self.trades),
+                    'final_equity': self.initial_capital
+                }
+            raise ValueError("Equity curve is empty; cannot compute results")
+
         equity_curve['returns'] = equity_curve['equity'].pct_change()
 
-        # Metrics
         returns = equity_curve['returns'].dropna()
-        metrics = calculate_portfolio_metrics(returns)
+
+        if returns.empty:
+            metrics = {
+                'total_return': 0.0,
+                'annual_return': 0.0,
+                'volatility': 0.0,
+                'sharpe_ratio': 0.0,
+                'sortino_ratio': 0.0,
+                'max_drawdown': 0.0,
+                'calmar_ratio': 0.0
+            }
+        else:
+            metrics = calculate_portfolio_metrics(returns)
 
         # Turnover
         if len(self.positions) > 1:
@@ -271,6 +431,9 @@ class VectorizedBacktester:
 
     def _positions_to_weights(self) -> pd.DataFrame:
         """Convert positions history to weights DataFrame"""
+        if not self.positions or self._close_price_matrix is None:
+            return pd.DataFrame(columns=['date', 'symbol', 'weight'])
+
         records = []
 
         for pos_record in self.positions:
@@ -278,13 +441,21 @@ class VectorizedBacktester:
             positions = pos_record['positions']
             capital = pos_record['capital']
 
-            # Assuming we have prices (simplified)
+            if capital <= 0:
+                continue
+
+            price_series = self._get_price_series(self._close_price_matrix, date)
+            prices = price_series.dropna().to_dict()
+
             for symbol, shares in positions.items():
-                weight = shares / capital if capital > 0 else 0
+                price = prices.get(symbol)
+                if price is None:
+                    continue
+                weight = (shares * price) / capital
                 records.append({
                     'date': date,
                     'symbol': symbol,
                     'weight': weight
                 })
 
-        return pd.DataFrame(records)
+        return pd.DataFrame(records, columns=['date', 'symbol', 'weight'])

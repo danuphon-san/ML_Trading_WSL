@@ -373,14 +373,39 @@ def main():
         # Train model
         state['trainer'] = ModelTrainer(config)
 
-        logger.info(f"Training {config['modeling']['algorithm']} model...")
-        state['trainer'].train_with_mlflow(
-            X_train, y_train,
-            X_test, y_test,
-            run_name="core_pipeline_run"
-        )
+        algorithm = config['modeling']['algorithm']
+        logger.info(f"Training {algorithm} model...")
 
-        # Evaluate
+        tuning_result = None
+        if args.optuna_trials > 0 or args.optuna_timeout:
+            logger.info(
+                f"Running Optuna tuning: trials={args.optuna_trials}, timeout={args.optuna_timeout}, metric={args.optuna_metric}"
+            )
+            tuning_result = state['trainer'].tune_with_optuna(
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                n_trials=args.optuna_trials,
+                timeout=args.optuna_timeout,
+                metric=args.optuna_metric,
+                study_name=args.optuna_study_name,
+                storage=args.optuna_storage,
+                run_name="core_pipeline_optuna"
+            )
+
+            if tuning_result.get('best_params'):
+                logger.info(f"Optuna best params: {tuning_result['best_params']}")
+        else:
+            state['trainer'].train_with_mlflow(
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                run_name="core_pipeline_run"
+            )
+
+        # Evaluate (always on hold-out test set)
         metrics = state['trainer'].evaluate(X_test, y_test)
         logger.info(f"Model metrics: IC={metrics['ic']:.4f}, Rank IC={metrics['rank_ic']:.4f}")
 
@@ -443,7 +468,19 @@ def main():
             if state['df'] is None or state['df'].empty:
                 raise ValueError("No OHLCV data available for portfolio construction/backtesting")
 
-        price_panel = state['df'][['date', 'symbol', 'close']].copy()
+        need_open_prices = config.get('backtest', {}).get('execution_timing', 'close') == 'next_open'
+
+        price_cols = ['date', 'symbol', 'close']
+        if need_open_prices:
+            if 'open' in state['df'].columns:
+                price_cols.append('open')
+            else:
+                logger.warning(
+                    "Price data missing 'open' column while execution_timing is 'next_open'. "
+                    "Attempting to proceed, but backtest will fail without opens."
+                )
+
+        price_panel = state['df'][price_cols].copy()
 
         if benchmark_symbol:
             if price_panel[price_panel['symbol'] == benchmark_symbol].empty:
@@ -459,10 +496,15 @@ def main():
                         "regime detection will be skipped"
                     )
                 else:
-                    benchmark_prices = benchmark_prices[['date', 'symbol', 'close']]
+                    benchmark_cols = ['date', 'symbol', 'close']
+                    if need_open_prices and 'open' in benchmark_prices.columns:
+                        benchmark_cols.append('open')
+                    benchmark_prices = benchmark_prices[benchmark_cols]
                     price_panel = pd.concat([price_panel, benchmark_prices], ignore_index=True)
 
         required_cols = {'date', 'symbol', 'close'}
+        if need_open_prices:
+            required_cols.add('open')
         missing_cols = required_cols.difference(price_panel.columns)
 
         if missing_cols:

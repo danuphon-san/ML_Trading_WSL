@@ -1,15 +1,15 @@
 {
   "allocation": {
-    "equities": 0.49999999305555587,
-    "crypto": 1.388888831018521e-08,
-    "cash": 0.49999999305555587
+    "equities": 2.024430928772807e-07,
+    "crypto": 2.5842377716978508e-08,
+    "cash": 0.9999997717145294
   },
   "method": "erc",
-  "date": "2024-03-01 05:00:00",
+  "date": "2024-08-28 00:00:00",
   "metrics": {
-    "equity_volatility": 0.0,
+    "equity_volatility": 0.14978443724400928,
     "crypto_volatility": 0.0,
-    "estimated_portfolio_volatility": 0.0
+    "estimated_portfolio_volatility": 3.0322824740560194e-08
   },
   "rebalance_threshold": 0.05
 }

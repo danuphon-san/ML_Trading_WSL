@@ -95,6 +95,41 @@ Examples:
         help='Enable verbose logging. Default: False'
     )
 
+    parser.add_argument(
+        '--optuna-trials',
+        type=int,
+        default=0,
+        help='Run Optuna tuning with this many trials (0 disables tuning).'
+    )
+
+    parser.add_argument(
+        '--optuna-timeout',
+        type=int,
+        default=None,
+        help='Optional timeout (seconds) for Optuna study.'
+    )
+
+    parser.add_argument(
+        '--optuna-study-name',
+        type=str,
+        default=None,
+        help='Optional Optuna study name. Useful with persistent storage.'
+    )
+
+    parser.add_argument(
+        '--optuna-storage',
+        type=str,
+        default=None,
+        help='Optuna storage URI (e.g., sqlite:///optuna.db).'
+    )
+
+    parser.add_argument(
+        '--optuna-metric',
+        type=str,
+        default='rank_ic',
+        help='Metric to optimise during tuning (rank_ic, ic, r2, rmse, mse, mae).'
+    )
+
     return parser
 
 
