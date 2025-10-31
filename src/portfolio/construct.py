@@ -47,14 +47,12 @@ def construct_portfolio(
             logger.info(f"📊 Current regime: {current_regime['regime_name']} (multiplier={current_regime['risk_multiplier']:.2f})")
 
     # Step 1: Rank and select top K (regime-adjusted)
-    ranker = PortfolioRanker(config)
-
-    # Adjust top_k based on regime
-    adjusted_config = config.copy()
+    adjusted_config = config
     if current_regime:
         adjusted_config = _adjust_config_for_regime(config, current_regime)
 
-    selected_df = ranker.select_portfolio(scored_df, score_col, config=adjusted_config)
+    ranker = PortfolioRanker(adjusted_config)
+    selected_df = ranker.select_portfolio(scored_df, score_col)
 
     if len(selected_df) == 0:
         logger.warning("No stocks selected")

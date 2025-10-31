@@ -72,3 +72,5 @@ data/simfin_data/
 data/parquet
 data/simfin_data/
 data/simfin_data/download/us-income-quarterly.zip
+data/results/scored_df.parquet
+data/results/weights_df.parquet

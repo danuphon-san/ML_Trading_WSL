@@ -384,18 +384,64 @@ def main():
             continue_on_error=args.continue_on_error
         )
 
+    def ensure_price_panel():
+        """Ensure downstream steps have price data even when rerunning partial pipelines."""
+        if state['df'] is None:
+            logger.info("Reloading OHLCV data for price-dependent steps")
+
+            if state['symbols'] is None:
+                state['symbols'] = load_sp500_constituents()[:args.symbols]
+
+            ingester = OHLCVIngester()
+            state['df'] = ingester.load_parquet(state['symbols'])
+
+            if state['df'] is None or state['df'].empty:
+                raise ValueError("No OHLCV data available for portfolio construction/backtesting")
+
+        required_cols = {'date', 'symbol', 'close'}
+        missing_cols = required_cols.difference(state['df'].columns)
+
+        if missing_cols:
+            missing_str = ", ".join(sorted(missing_cols))
+            raise KeyError(f"Price DataFrame missing required columns: {missing_str}")
+
+        return state['df'][['date', 'symbol', 'close']].copy()
+
+    def ensure_scored_df():
+        """Ensure scored dataframe exists (load artifact when skipping prior steps)."""
+        if state['scored_df'] is None:
+            logger.info("Loading scored data artifact for portfolio construction")
+            try:
+                state['scored_df'] = saver.load_scored_df()
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    "Scored dataset not found. Run step 8 to generate ml_score outputs before step 9."
+                ) from exc
+
+        if state['scored_df'] is None or state['scored_df'].empty:
+            raise ValueError("Scored dataset is empty; portfolio construction requires ML scores.")
+
+        required_cols = {'date', 'symbol', 'ml_score'}
+        missing_cols = required_cols.difference(state['scored_df'].columns)
+        if missing_cols:
+            missing_str = ", ".join(sorted(missing_cols))
+            raise KeyError(f"Scored dataset missing required columns: {missing_str}")
+
+        return state['scored_df']
+
     # ========================================================================
     # STEP 9: Portfolio Construction
     # ========================================================================
 
     def step_9_portfolio_construction():
         """Construct portfolio weights using optimizer"""
-        price_panel = state['df'][['date', 'symbol', 'close']].copy()
+        price_panel = ensure_price_panel()
+        scored_df = ensure_scored_df()
 
         logger.info(f"Constructing portfolio with optimizer: {config['portfolio']['optimizer']}")
         logger.info(f"Top K positions: {config['portfolio']['top_k']}")
 
-        unique_dates = sorted(state['scored_df']['date'].unique())
+        unique_dates = sorted(scored_df['date'].unique())
 
         # Limit dates for demo (can remove for production)
         MAX_DATES = 200
@@ -407,7 +453,7 @@ def main():
             if i % 20 == 0:
                 logger.info(f"Processing rebalance date {i+1}/{len(rebalance_dates)}")
 
-            day_scores = state['scored_df'][state['scored_df']['date'] == date]
+            day_scores = scored_df[scored_df['date'] == date]
             weights = construct_portfolio(day_scores, price_panel, config)
 
             for symbol, weight in weights.items():
@@ -436,7 +482,7 @@ def main():
 
     def step_10_backtesting():
         """Run backtest with realistic costs"""
-        price_panel = state['df'][['date', 'symbol', 'close']].copy()
+        price_panel = ensure_price_panel()
 
         logger.info("Running backtest...")
         logger.info(f"Costs: {config['portfolio']['costs_bps']} bps commission, "

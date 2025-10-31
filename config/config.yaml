@@ -135,7 +135,7 @@ modeling:
 # Portfolio construction
 portfolio:
   # Selection
-  top_k: 20  # Number of positions
+  top_k: 10  # Number of positions
   selection_method: "top_score"  # top_score, threshold
   score_threshold: 0.0  # Only if selection_method = threshold
 
