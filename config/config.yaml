@@ -27,14 +27,14 @@ fundamentals:
   provider: "simfin"  # yfinance (5 quarters), alpha_vantage (80+ quarters), or simfin (20+ years)
   
   simfin:
-    api_key: "6174fd1a-e6a9-4ff6-909b-2563bea892ac"  # Replace with your SimFin Start Plan API key
+    api_key: ${SIMFIN_API_KEY}  # Set in .env file or environment variable
     data_dir: "data/simfin_data"  # Local cache directory for SimFin data
     market: "us"  # US market
     variant: "quarterly"  # quarterly or annual
     include_banks_insurance: false  # Set to true to include specialized datasets for banks/insurance
-  
+
   alpha_vantage:
-    api_key: "KKFTONQROSZWXV0V"  # Get free key at https://www.alphavantage.co/support/#api-key
+    api_key: ${ALPHA_VANTAGE_API_KEY}  # Set in .env file or environment variable
     rate_limit_sleep: 0.3  # Seconds between API calls (free tier: ~5 calls/min)
 
 # Universe selection
@@ -188,6 +188,37 @@ portfolio:
   max_turnover: 0.35  # Alert if turnover exceeds 35%
   max_leverage: 1.0   # Long-only (1.0), allow leverage (>1.0)
 
+# Regime Detection (Adaptive Portfolio Management)
+regime:
+  # Detection method
+  method: "rules"  # 'rules' (faster, interpretable) or 'hmm' (data-driven, requires hmmlearn)
+
+  # Volatility thresholds (annualized)
+  vol_window: 20  # Rolling window for volatility calculation (days)
+  vol_threshold_high: 0.25  # > 25% annualized vol = high volatility regime
+  vol_threshold_low: 0.15   # < 15% annualized vol = low volatility regime
+
+  # Drawdown threshold
+  dd_threshold: -0.10  # -10% drawdown triggers risk-off regime
+
+  # Trend detection
+  trend_window: 50  # SMA window for trend detection (days)
+
+  # Risk multipliers (applied to position sizes)
+  # Risk-Off (regime 0): Reduce exposure to 50%
+  # Normal (regime 1):    Full exposure (100%)
+  # Risk-On (regime 2):   Increase exposure to 120% (capped)
+  risk_multipliers:
+    risk_off: 0.5   # 50% exposure in stressed markets
+    normal: 1.0     # 100% exposure in normal conditions
+    risk_on: 1.2    # 120% exposure in favorable conditions
+
+  # Top-K adjustment factors (applied to portfolio.top_k)
+  top_k_multipliers:
+    risk_off: 0.6   # Concentrate: 60% of normal top_k (defensive stocks)
+    normal: 1.0     # No change
+    risk_on: 1.3    # Diversify: 130% of normal top_k (capped at 50)
+
 # Backtesting
 backtest:
   start_date: "2018-01-01"
@@ -204,20 +235,76 @@ backtest:
   # Reporting
   benchmark: "SPY"  # Compare to S&P 500
 
-# Live operations
+# Live Operations (Production Trading) - NEW: Option A
 live:
-  enabled: false
-  dry_run: true  # Simulate trades without execution
-  execution_time: "09:35"  # EST, after market open
+  enabled: false  # Set to true when ready for production
+  dry_run: true   # Default to dry-run (no real trades)
+
+  # Model
+  champion_model_path: "production/champion_model.pkl"
+  fallback_model_path: "data/models/latest/model.pkl"
+
+  # Portfolio
+  initial_capital: 100000  # Starting capital in USD
+  positions_file: "live/current_positions.csv"
 
   # Trade execution
-  broker: null  # alpaca, interactive_brokers, etc.
+  min_trade_size: 100      # Minimum trade in USD
+  max_position_pct: 0.15   # Max 15% per position
+  max_volume_pct: 0.05     # Trade max 5% of daily volume
 
-  # Monitoring
-  alerts:
+  # Regime adaptation
+  enable_regime_adaptation: true
+
+  # Outputs
+  output_dir: "live"
+  save_trade_history: true
+
+  # Safety checks
+  safety:
+    validate_before_trade: true
+    require_manual_approval: true  # Human must approve trades
+    max_daily_trades: 50
+
+  # Notifications
+  notifications:
+    enabled: false
+    method: "email"  # email, slack, webhook
+    email_recipients: []
+    send_on_kill_switch: true
+    send_daily_summary: false
+
+# Operations Monitoring - NEW: Option A
+ops:
+  # Performance tracking
+  track_ic: true
+  ic_lookback_days: 20
+  ic_alert_threshold: 0.02
+
+  # Kill-switch
+  kill_switch:
     enabled: true
-    email: null  # Email for alerts
-    slack_webhook: null  # Slack webhook URL
+    max_daily_loss_pct: 0.03      # Halt if lose > 3% in one day
+    min_live_sharpe_threshold: 0.5
+    min_live_sharpe_lookback_weeks: 6
+
+  # Alerts
+  alerts: "email"  # email, slack, none
+  email_recipients: []
+
+  # Reporting
+  generate_daily_report: true
+  report_output_dir: "live"
+
+# Risk Management - NEW: Option A
+risk:
+  max_sector_weight: 0.30    # Max 30% in any sector
+  max_market_cap_weight:
+    large_cap: 0.70          # Min 30% in large cap
+    mid_cap: 0.25            # Max 25% in mid cap
+    small_cap: 0.05          # Max 5% in small cap
+
+  rebalance_threshold: 0.05  # Rebalance if drift > 5%
 
 # Logging
 logging:

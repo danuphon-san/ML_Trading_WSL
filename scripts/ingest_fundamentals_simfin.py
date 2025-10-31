@@ -17,17 +17,11 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-import yaml
 import argparse
 from loguru import logger
 from src.io.ingest_fundamentals import FundamentalsIngester
 from src.io.universe import load_sp500_constituents
-
-
-def load_config(config_path: str = "config/config.yaml") -> dict:
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+from utils.config_loader import load_config_with_validation
 
 
 def get_sp500_symbols() -> list:
@@ -68,10 +62,15 @@ def main():
     )
     
     args = parser.parse_args()
-    
-    # Load configuration
+
+    # Load configuration with environment variable support and validation
     logger.info("Loading configuration...")
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config_with_validation(args.config, provider='simfin')
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        logger.error("Please check your .env file or environment variables")
+        sys.exit(1)
     
     # Get SimFin settings
     simfin_cfg = cfg['fundamentals']['simfin']
@@ -79,11 +78,7 @@ def main():
     data_dir = simfin_cfg['data_dir']
     market = simfin_cfg['market']
     variant = simfin_cfg['variant']
-    
-    if api_key == "your-simfin-api-key-here":
-        logger.error("Please set your SimFin API key in config/config.yaml")
-        sys.exit(1)
-    
+
     # Get symbols
     if args.symbols:
         symbols = args.symbols

@@ -15,11 +15,11 @@ PROJECT_ROOT = Path(__file__).parent.parent
 os.chdir(PROJECT_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import yaml
 from datetime import datetime, timedelta
 from loguru import logger
 from src.io.ingest_ohlcv import OHLCVIngester
 from src.io.ingest_fundamentals import FundamentalsIngester
+from utils.config_loader import load_config
 
 
 def select_provider(cfg: dict) -> tuple:
@@ -66,10 +66,6 @@ def select_provider(cfg: dict) -> tuple:
         simfin_data_dir = simfin_cfg.get('data_dir', 'data/simfin_data')
         simfin_market = simfin_cfg.get('market', 'us')
         simfin_variant = simfin_cfg.get('variant', 'quarterly')
-        
-        if api_key == "your-simfin-api-key-here":
-            logger.error("Please set your SimFin API key in config/config.yaml")
-            sys.exit(1)
     
     elif provider == 'alpha_vantage':
         api_key = cfg.get('fundamentals', {}).get('alpha_vantage', {}).get('api_key')
@@ -86,9 +82,14 @@ def main():
     logger.info(f"Working directory: {os.getcwd()}")
     logger.info("="*70)
 
-    # Load configuration (now relative to project root)
+    # Load configuration with environment variable support
     config_path = PROJECT_ROOT / 'config' / 'config.yaml'
-    cfg = yaml.safe_load(open(config_path))
+    try:
+        cfg = load_config(str(config_path))
+    except Exception as e:
+        logger.error(f"Failed to load configuration: {e}")
+        logger.error("Please check your .env file or environment variables")
+        return
 
     # Get symbols from existing data
     parquet_path = Path(cfg['data']['parquet']) / '1d'

@@ -528,3 +528,350 @@ def run_monitoring(
         'html_report': html_report,
         'kill_switch_triggered': kill_switch_status.get('triggered', False)
     }
+
+
+# ============================================================================
+# MODEL HEALTH MONITORING (NEW - Option A Enhancement)
+# ============================================================================
+
+def calculate_information_coefficient(
+    scores: pd.Series,
+    forward_returns: pd.Series
+) -> Dict[str, float]:
+    """
+    Calculate Information Coefficient (IC) - Measures model predictive power
+
+    IC is the correlation between ML scores and actual forward returns.
+    Higher IC (>0.05) indicates strong predictive power.
+
+    Args:
+        scores: ML model scores (predictions)
+        forward_returns: Actual forward returns
+
+    Returns:
+        {
+            'ic': Pearson correlation,
+            'rank_ic': Spearman correlation (robust to outliers),
+            'ic_p_value': Statistical significance,
+            'rank_ic_p_value': Statistical significance,
+            'n_samples': Number of data points
+        }
+    """
+    from scipy.stats import pearsonr, spearmanr
+
+    # Align and drop NaN
+    aligned = pd.DataFrame({'score': scores, 'return': forward_returns}).dropna()
+
+    if len(aligned) < 10:
+        logger.warning(f"Insufficient data for IC calculation: {len(aligned)} samples")
+        return {
+            'ic': 0.0,
+            'rank_ic': 0.0,
+            'ic_p_value': 1.0,
+            'rank_ic_p_value': 1.0,
+            'n_samples': len(aligned)
+        }
+
+    ic, ic_pval = pearsonr(aligned['score'], aligned['return'])
+    rank_ic, rank_ic_pval = spearmanr(aligned['score'], aligned['return'])
+
+    logger.info(f"IC={ic:.4f} (p={ic_pval:.4f}), Rank IC={rank_ic:.4f} (p={rank_ic_pval:.4f}), n={len(aligned)}")
+
+    return {
+        'ic': float(ic),
+        'rank_ic': float(rank_ic),
+        'ic_p_value': float(ic_pval),
+        'rank_ic_p_value': float(rank_ic_pval),
+        'n_samples': len(aligned)
+    }
+
+
+def calculate_top_quantile_performance(
+    scores: pd.DataFrame,
+    returns: pd.DataFrame,
+    n_quantiles: int = 5
+) -> pd.DataFrame:
+    """
+    Calculate performance by score quantile (quintile analysis)
+
+    Expected: Top quantile (5) should outperform bottom quantile (1)
+
+    Args:
+        scores: DataFrame with [date, symbol, ml_score]
+        returns: DataFrame with [date, symbol, forward_return]
+        n_quantiles: Number of quantiles (default: 5 = quintiles)
+
+    Returns:
+        DataFrame with columns:
+        - quantile: 1 (lowest scores) to 5 (highest scores)
+        - avg_return: Average forward return
+        - std_return: Standard deviation of returns
+        - n_stocks: Number of stocks in quantile
+        - sharpe: Approximate Sharpe ratio
+    """
+    merged = pd.merge(
+        scores[['date', 'symbol', 'ml_score']],
+        returns[['date', 'symbol', 'forward_return']],
+        on=['date', 'symbol']
+    )
+
+    if len(merged) == 0:
+        logger.warning("No data for quantile analysis")
+        return pd.DataFrame()
+
+    # Assign quantiles
+    merged['quantile'] = pd.qcut(
+        merged['ml_score'],
+        q=n_quantiles,
+        labels=False,
+        duplicates='drop'
+    ) + 1  # 1-indexed
+
+    # Calculate performance per quantile
+    quantile_perf = merged.groupby('quantile')['forward_return'].agg([
+        ('avg_return', 'mean'),
+        ('std_return', 'std'),
+        ('n_stocks', 'count')
+    ]).reset_index()
+
+    # Calculate approximate Sharpe (assuming daily returns)
+    quantile_perf['sharpe'] = (
+        (quantile_perf['avg_return'] * 252) / (quantile_perf['std_return'] * np.sqrt(252))
+    ).replace([np.inf, -np.inf], 0)
+
+    logger.info(f"Quantile analysis: Top={quantile_perf.iloc[-1]['avg_return']:.4f}, "
+               f"Bottom={quantile_perf.iloc[0]['avg_return']:.4f}")
+
+    return quantile_perf
+
+
+def detect_model_drift(
+    recent_ic: List[float],
+    lookback: int = 20,
+    threshold: float = 0.02
+) -> Dict[str, Any]:
+    """
+    Detect model performance degradation
+
+    Args:
+        recent_ic: List of recent IC values (last N days)
+        lookback: Window to calculate average IC
+        threshold: Minimum acceptable IC
+
+    Returns:
+        {
+            'degraded': bool,
+            'avg_ic': float,
+            'days_below_threshold': int,
+            'lookback': int,
+            'threshold': float,
+            'action': 'continue' or 'review_model'
+        }
+    """
+    if len(recent_ic) < lookback:
+        return {
+            'degraded': False,
+            'reason': 'insufficient_history',
+            'avg_ic': None,
+            'days_below_threshold': 0,
+            'lookback': lookback,
+            'threshold': threshold,
+            'action': 'continue'
+        }
+
+    avg_ic = np.mean(recent_ic[-lookback:])
+    days_below = sum(1 for ic in recent_ic[-lookback:] if ic < threshold)
+
+    # Degraded if: avg IC below threshold AND more than 50% of days below threshold
+    degraded = avg_ic < threshold and days_below >= lookback * 0.5
+
+    result = {
+        'degraded': degraded,
+        'avg_ic': float(avg_ic),
+        'days_below_threshold': int(days_below),
+        'lookback': lookback,
+        'threshold': threshold,
+        'action': 'review_model' if degraded else 'continue'
+    }
+
+    if degraded:
+        logger.warning(f"⚠️  Model drift detected: avg_ic={avg_ic:.4f} over {lookback} days "
+                      f"({days_below} days below {threshold})")
+    else:
+        logger.info(f"✓ Model health OK: avg_ic={avg_ic:.4f} over {lookback} days")
+
+    return result
+
+
+def check_regime_performance(
+    equity_curve: pd.DataFrame,
+    regime_history: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Calculate performance breakdown by market regime
+
+    Expected: Model should perform reasonably in all 3 regimes
+
+    Args:
+        equity_curve: DataFrame with [date, equity]
+        regime_history: DataFrame with [date, regime]
+
+    Returns:
+        DataFrame with columns:
+        - regime: 0 (Risk-Off), 1 (Normal), 2 (Risk-On)
+        - regime_name: Human-readable name
+        - avg_return: Average daily return
+        - sharpe: Sharpe ratio
+        - win_rate: % of positive days
+        - n_days: Number of days in regime
+    """
+    # Merge equity curve with regime history
+    merged = pd.merge(equity_curve, regime_history[['date', 'regime']], on='date')
+    merged = merged.sort_values('date')
+    merged['return'] = merged['equity'].pct_change()
+
+    regime_stats = []
+
+    for regime_id in [0, 1, 2]:
+        regime_data = merged[merged['regime'] == regime_id]
+        returns = regime_data['return'].dropna()
+
+        if len(returns) > 0:
+            avg_return = returns.mean()
+            std_return = returns.std()
+            sharpe = (avg_return * 252) / (std_return * np.sqrt(252)) if std_return > 0 else 0
+            win_rate = (returns > 0).sum() / len(returns)
+        else:
+            avg_return = sharpe = win_rate = 0
+
+        regime_names = {0: 'Risk-Off', 1: 'Normal', 2: 'Risk-On'}
+
+        regime_stats.append({
+            'regime': regime_id,
+            'regime_name': regime_names[regime_id],
+            'avg_return': float(avg_return),
+            'sharpe': float(sharpe),
+            'win_rate': float(win_rate),
+            'n_days': len(regime_data)
+        })
+
+    regime_df = pd.DataFrame(regime_stats)
+
+    logger.info("Regime performance breakdown:")
+    for _, row in regime_df.iterrows():
+        logger.info(f"  {row['regime_name']:10s}: return={row['avg_return']:.4f}, "
+                   f"sharpe={row['sharpe']:.2f}, win_rate={row['win_rate']:.2%}, "
+                   f"days={row['n_days']}")
+
+    return regime_df
+
+
+def track_model_health_daily(
+    config: Dict,
+    scores_today: pd.DataFrame,
+    returns_future: pd.DataFrame,
+    equity_curve: pd.DataFrame,
+    regime_history: Optional[pd.DataFrame] = None,
+    ic_history: Optional[List[float]] = None
+) -> Dict[str, Any]:
+    """
+    Comprehensive daily model health check
+
+    Args:
+        config: Configuration dictionary
+        scores_today: Today's ML scores [date, symbol, ml_score]
+        returns_future: Future returns (for IC calculation)
+        equity_curve: Historical equity curve
+        regime_history: Optional regime history
+        ic_history: Optional historical IC values
+
+    Returns:
+        {
+            'ic_metrics': {...},
+            'quantile_performance': DataFrame,
+            'drift_detection': {...},
+            'regime_performance': DataFrame or None,
+            'health_status': 'healthy' or 'degraded',
+            'recommendations': [...]
+        }
+    """
+    logger.info("="*70)
+    logger.info("MODEL HEALTH CHECK")
+    logger.info("="*70)
+
+    recommendations = []
+
+    # 1. Calculate IC
+    ic_metrics = calculate_information_coefficient(
+        scores=scores_today['ml_score'],
+        forward_returns=returns_future['forward_return']
+    )
+
+    if ic_metrics['ic'] < 0.02:
+        recommendations.append("⚠️  IC below 0.02 - Model may be losing predictive power")
+
+    # 2. Quantile performance
+    quantile_perf = calculate_top_quantile_performance(
+        scores=scores_today,
+        returns=returns_future,
+        n_quantiles=5
+    )
+
+    if len(quantile_perf) > 0:
+        top_return = quantile_perf.iloc[-1]['avg_return']
+        bottom_return = quantile_perf.iloc[0]['avg_return']
+
+        if top_return <= bottom_return:
+            recommendations.append("⚠️  Top quantile underperforming bottom quantile - Model may be inverted")
+
+    # 3. Drift detection
+    drift_status = {'degraded': False, 'action': 'continue'}
+    if ic_history and len(ic_history) >= 20:
+        drift_status = detect_model_drift(
+            recent_ic=ic_history,
+            lookback=20,
+            threshold=config.get('ops', {}).get('ic_alert_threshold', 0.02)
+        )
+
+        if drift_status['degraded']:
+            recommendations.append("🚨 Model drift detected - Consider retraining")
+
+    # 4. Regime performance
+    regime_perf = None
+    if regime_history is not None and len(regime_history) > 0:
+        regime_perf = check_regime_performance(equity_curve, regime_history)
+
+        # Check if model fails in any regime
+        if len(regime_perf) > 0:
+            bad_regimes = regime_perf[regime_perf['sharpe'] < 0]
+            if len(bad_regimes) > 0:
+                for _, regime_row in bad_regimes.iterrows():
+                    recommendations.append(
+                        f"⚠️  Negative Sharpe in {regime_row['regime_name']} regime"
+                    )
+
+    # Overall health status
+    health_status = 'healthy'
+    if drift_status['degraded'] or ic_metrics['ic'] < 0.01:
+        health_status = 'degraded'
+    elif ic_metrics['ic'] < 0.02 or len(recommendations) > 2:
+        health_status = 'warning'
+
+    result = {
+        'ic_metrics': ic_metrics,
+        'quantile_performance': quantile_perf.to_dict('records') if len(quantile_perf) > 0 else [],
+        'drift_detection': drift_status,
+        'regime_performance': regime_perf.to_dict('records') if regime_perf is not None else None,
+        'health_status': health_status,
+        'recommendations': recommendations
+    }
+
+    logger.info(f"Model health status: {health_status.upper()}")
+    if recommendations:
+        logger.info("Recommendations:")
+        for rec in recommendations:
+            logger.info(f"  {rec}")
+
+    logger.info("="*70)
+
+    return result

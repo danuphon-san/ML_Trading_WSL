@@ -72,6 +72,9 @@ class TechnicalFeatures:
         # Range features
         df = self._add_range_features(df)
 
+        # Regime indicators
+        df = self._add_regime_features(df)
+
         return df
 
     def _add_momentum(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -314,6 +317,84 @@ class TechnicalFeatures:
         # Direct volume % change (not just ratio)
         df['volume_pct_change'] = df['volume'].pct_change()
         df['volume_pct_change_5d'] = df['volume'].pct_change(5)
+
+        return df
+
+    def _add_regime_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add market regime indicators
+
+        These features help the ML model learn regime-conditional patterns:
+        - Volatility regime (high vs low volatility periods)
+        - Trend regime (strong trend vs ranging)
+        - Drawdown intensity (stressed vs normal markets)
+        - Market breadth proxies
+        """
+        # 1. Volatility Regime
+        # Compare short-term vol to long-term vol
+        returns = df['close'].pct_change()
+        short_vol = returns.rolling(20).std() * np.sqrt(252)
+        long_vol = returns.rolling(252).std() * np.sqrt(252)
+
+        df['vol_regime'] = short_vol / (long_vol + 1e-10)
+        # Values > 1.0 indicate elevated volatility
+
+        # 2. Trend Strength (ADX-style)
+        # Measure of trend vs ranging
+        sma_20 = df['close'].rolling(20).mean()
+        sma_50 = df['close'].rolling(50).mean()
+
+        df['trend_strength'] = abs(sma_20 - sma_50) / (df['close'] + 1e-10)
+        # Higher values = stronger trend
+
+        # 3. Drawdown Intensity
+        # How far from recent high
+        running_max = df['close'].expanding().max()
+        df['drawdown_pct'] = (df['close'] - running_max) / (running_max + 1e-10)
+        # Negative values, more negative = deeper drawdown
+
+        # Distance from 200-day high
+        rolling_max_200 = df['close'].rolling(200).max()
+        df['dist_from_200d_high'] = (df['close'] - rolling_max_200) / (rolling_max_200 + 1e-10)
+
+        # 4. Bull/Bear Signal
+        # Simple binary indicator: above/below 200-day SMA
+        sma_200 = df['close'].rolling(200).mean()
+        df['above_200_sma'] = (df['close'] > sma_200).astype(int)
+
+        # 5. Momentum Regime
+        # Multiple timeframe momentum consensus
+        mom_5d = df['close'].pct_change(5)
+        mom_20d = df['close'].pct_change(20)
+        mom_60d = df['close'].pct_change(60)
+
+        # Count how many timeframes are positive
+        df['momentum_consensus'] = (
+            (mom_5d > 0).astype(int) +
+            (mom_20d > 0).astype(int) +
+            (mom_60d > 0).astype(int)
+        )
+        # 0 = all negative, 3 = all positive
+
+        # 6. Volatility Expansion/Contraction
+        # Rate of change of volatility
+        df['vol_expansion'] = short_vol.pct_change(20)
+        # Positive = volatility expanding, negative = contracting
+
+        # 7. Crisis Indicator
+        # Extreme drawdown + high volatility
+        df['crisis_indicator'] = (
+            (df['drawdown_pct'] < -0.15) &  # > 15% drawdown
+            (df['vol_regime'] > 1.5)  # Volatility 50% above normal
+        ).astype(int)
+
+        # 8. Recovery Indicator
+        # Bouncing from drawdown with declining volatility
+        drawdown_improving = df['drawdown_pct'].diff(5) > 0
+        vol_declining = df['vol_regime'].diff(5) < 0
+        df['recovery_indicator'] = (drawdown_improving & vol_declining).astype(int)
+
+        logger.debug(f"Added regime features: {[col for col in df.columns if 'regime' in col or 'crisis' in col or 'recovery' in col]}")
 
         return df
 
