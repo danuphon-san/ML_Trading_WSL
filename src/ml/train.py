@@ -134,21 +134,62 @@ class ModelTrainer:
             learning_rate=params.get('learning_rate', 0.05),
             subsample=params.get('subsample', 0.8),
             colsample_bytree=params.get('colsample_bytree', 0.8),
+            min_child_weight=params.get('min_child_weight', 1.0),
+            gamma=params.get('gamma', 0.0),
+            reg_lambda=params.get('reg_lambda', 1.0),
+            reg_alpha=params.get('reg_alpha', 0.0),
             objective=params.get('objective', 'reg:squarederror'),
             random_state=42
         )
 
-        # Early stopping with validation set
+        early_stopping_rounds = params.get('early_stopping_rounds')
+        callbacks = []
+
+        eval_set = None
         if X_val is not None and y_val is not None:
             eval_set = [(X_train, y_train), (X_val, y_val)]
-            model.fit(
-                X_train, y_train,
-                eval_set=eval_set,
-                verbose=False,
-                early_stopping_rounds=params.get('early_stopping_rounds')
-            )
-        else:
-            model.fit(X_train, y_train)
+
+            if early_stopping_rounds:
+                try:
+                    callbacks.append(
+                        xgb.callback.EarlyStopping(
+                            rounds=int(early_stopping_rounds),
+                            save_best=True
+                        )
+                    )
+                except AttributeError:
+                    logger.warning("xgboost callback API unavailable; skipping early stopping")
+
+        fit_kwargs = {
+            'X': X_train,
+            'y': y_train,
+            'eval_set': eval_set,
+            'verbose': False
+        }
+
+        eval_metric = params.get('eval_metric')
+        if eval_metric:
+            fit_kwargs['eval_metric'] = eval_metric
+
+        if callbacks:
+            try:
+                model.fit(**fit_kwargs, callbacks=callbacks)
+                return model
+            except TypeError:
+                logger.warning("xgboost callbacks unsupported; retrying without callbacks")
+
+        allow_early_stop = bool(early_stopping_rounds and eval_set is not None)
+
+        if allow_early_stop:
+            fit_kwargs['early_stopping_rounds'] = int(early_stopping_rounds)
+            try:
+                model.fit(**fit_kwargs)
+                return model
+            except TypeError:
+                logger.warning("xgboost early_stopping_rounds unsupported; training without early stopping")
+                fit_kwargs.pop('early_stopping_rounds', None)
+
+        model.fit(**fit_kwargs)
 
         return model
 
@@ -184,6 +225,11 @@ class ModelTrainer:
 
         ic = np.corrcoef(y_true_series, y_pred_series)[0, 1]
         rank_ic = y_true_series.corr(y_pred_series, method='spearman')
+
+        if not np.isfinite(ic):
+            ic = 0.0
+        if not np.isfinite(rank_ic):
+            rank_ic = 0.0
 
         return {
             'mse': mse,
@@ -524,8 +570,8 @@ class ModelTrainer:
                 metrics = self._compute_metrics(inner_y_val, predictions)
                 score = metrics[metric]
 
-                if np.isnan(score):
-                    raise optuna.exceptions.TrialPruned(f"Metric {metric} is NaN")
+                if not np.isfinite(score) or score == 0.0:
+                    raise optuna.exceptions.TrialPruned(f"Metric {metric} is invalid ({score})")
 
                 trial.set_user_attr('metrics', metrics)
                 return float(score)
