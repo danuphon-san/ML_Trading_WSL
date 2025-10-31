@@ -71,6 +71,8 @@ def main():
     if args.start_date:
         config['ingest']['start_date'] = args.start_date
 
+    benchmark_symbol = config.get('reporting', {}).get('benchmark')
+
     # Fundamental provider settings (shared across steps)
     fund_config = config.get('fundamentals', {})
     fund_provider = fund_config.get('provider', 'yfinance').lower()
@@ -158,6 +160,18 @@ def main():
         logger.info(f"Fetching OHLCV data from {start_date}")
         state['ohlcv_data'] = ingester.fetch_ohlcv(state['symbols'], start_date, None)
         ingester.save_parquet(state['ohlcv_data'])
+
+        if benchmark_symbol and benchmark_symbol not in state['symbols']:
+            logger.info(f"Fetching benchmark OHLCV data for {benchmark_symbol}")
+            benchmark_data = ingester.fetch_ohlcv([benchmark_symbol], start_date, None)
+
+            if benchmark_data:
+                ingester.save_parquet(benchmark_data)
+            else:
+                logger.warning(
+                    f"Benchmark {benchmark_symbol} returned no data from provider. "
+                    "Verify the ticker symbol for your data source."
+                )
 
         # Fetch fundamentals
         fund_ingester = FundamentalsIngester(
@@ -386,6 +400,8 @@ def main():
 
     def ensure_price_panel():
         """Ensure downstream steps have price data even when rerunning partial pipelines."""
+        ingester = None
+
         if state['df'] is None:
             logger.info("Reloading OHLCV data for price-dependent steps")
 
@@ -398,14 +414,33 @@ def main():
             if state['df'] is None or state['df'].empty:
                 raise ValueError("No OHLCV data available for portfolio construction/backtesting")
 
+        price_panel = state['df'][['date', 'symbol', 'close']].copy()
+
+        if benchmark_symbol:
+            if price_panel[price_panel['symbol'] == benchmark_symbol].empty:
+                if ingester is None:
+                    ingester = OHLCVIngester()
+
+                logger.info(f"Benchmark {benchmark_symbol} missing from price data; attempting to load from storage")
+                benchmark_prices = ingester.load_parquet([benchmark_symbol])
+
+                if benchmark_prices.empty:
+                    logger.warning(
+                        f"Benchmark {benchmark_symbol} price data not found in parquet storage; "
+                        "regime detection will be skipped"
+                    )
+                else:
+                    benchmark_prices = benchmark_prices[['date', 'symbol', 'close']]
+                    price_panel = pd.concat([price_panel, benchmark_prices], ignore_index=True)
+
         required_cols = {'date', 'symbol', 'close'}
-        missing_cols = required_cols.difference(state['df'].columns)
+        missing_cols = required_cols.difference(price_panel.columns)
 
         if missing_cols:
             missing_str = ", ".join(sorted(missing_cols))
             raise KeyError(f"Price DataFrame missing required columns: {missing_str}")
 
-        return state['df'][['date', 'symbol', 'close']].copy()
+        return price_panel
 
     def ensure_scored_df():
         """Ensure scored dataframe exists (load artifact when skipping prior steps)."""
