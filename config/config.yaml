@@ -94,8 +94,9 @@ labels:
 
 # Machine learning
 modeling:
-  algorithm: "xgboost"  # xgboost, random_forest, lightgbm, catboost
+  algorithm: "lightgbm"  # xgboost, random_forest, lightgbm, catboost
   target_variable: "forward_return_5d"
+  embargo_days: 5
 
   # Time-series cross-validation
   cv:

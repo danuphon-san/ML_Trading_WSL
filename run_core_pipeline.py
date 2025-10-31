@@ -329,8 +329,48 @@ def main():
 
     def step_6_feature_selection():
         """Prepare ML dataset with feature selection"""
-        # Save features with fundamentals (artifact #1)
-        saver.save_features_with_fundamentals(state['df'])
+        # Save features with fundamentals (artifact #1), excluding forward-looking/label columns
+        forward_like_prefixes = ("forward_", "future_", "next_", "target_")
+        leaked_like_substrings = ("risk_adjusted_return",)
+
+        def _is_forward_looking(col: str) -> bool:
+            lower = col.lower()
+            return lower.startswith(forward_like_prefixes) or any(s in lower for s in leaked_like_substrings)
+
+        if state['df'] is None:
+            raise ValueError("State DataFrame is None prior to feature saving in step 6")
+
+        cols_to_drop = [c for c in state['df'].columns if _is_forward_looking(c)]
+        df_no_labels = state['df'].drop(columns=cols_to_drop, errors='ignore')
+
+        # Reorder columns to place statistically "safe" features first (for validator sampling)
+        metadata_cols = ['date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'adj_close']
+        feature_cols = [c for c in df_no_labels.columns if c not in metadata_cols]
+
+        safe_features = []
+        unsafe_features = []
+        for col in feature_cols:
+            try:
+                if not pd.api.types.is_numeric_dtype(df_no_labels[col]):
+                    safe_features.append(col)
+                    continue
+                series = df_no_labels[col].dropna()
+                if len(series) < 100:
+                    safe_features.append(col)
+                    continue
+                mean_val = float(series.mean())
+                std_val = float(series.std())
+                if abs(mean_val) > 100 and std_val > 1000:
+                    unsafe_features.append(col)
+                else:
+                    safe_features.append(col)
+            except Exception:
+                # If any issue computing stats, treat as safe to avoid reordering surprises
+                safe_features.append(col)
+
+        ordered_cols = [c for c in metadata_cols if c in df_no_labels.columns] + safe_features + unsafe_features
+        df_to_save = df_no_labels[ordered_cols]
+        saver.save_features_with_fundamentals(df_to_save)
 
         # Prepare dataset
         label_col = f"forward_return_{config['labels']['horizon']}d"
@@ -437,8 +477,11 @@ def main():
         logger.info(f"Generating scores for {len(X_test):,} observations")
         scores = state['trainer'].predict(X_test)
 
-        # Create scored DataFrame
-        state['scored_df'] = test_df_clean[['date', 'symbol']].copy()
+        # Create scored DataFrame (include label for validator timing check if present)
+        base_cols = ['date', 'symbol']
+        if label_col in test_df_clean.columns:
+            base_cols.append(label_col)
+        state['scored_df'] = test_df_clean[base_cols].copy()
         state['scored_df']['ml_score'] = scores
 
         # Save scored data (artifact #2)
