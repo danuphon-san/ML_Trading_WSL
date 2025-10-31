@@ -1,0 +1,258 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>ML Trading Ops Report - 2025-10-31</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                .container { max-width: 1200px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; }
+                h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+                h2 { color: #34495e; margin-top: 30px; border-bottom: 1px solid #bdc3c7; padding-bottom: 5px; }
+                .metric { display: inline-block; margin: 10px 20px; }
+                .metric-label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; }
+                .metric-value { font-size: 24px; font-weight: bold; color: #2c3e50; }
+                .positive { color: #27ae60; }
+                .negative { color: #e74c3c; }
+                .warning { background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 10px 0; }
+                .alert { background-color: #f8d7da; border-left: 4px solid #dc3545; padding: 10px; margin: 10px 0; }
+                table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+                th { background-color: #3498db; color: white; padding: 10px; text-align: left; }
+                td { padding: 8px; border-bottom: 1px solid #ecf0f1; }
+                tr:hover { background-color: #f8f9fa; }
+                .footer { margin-top: 40px; text-align: center; color: #95a5a6; font-size: 12px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>📊 ML Trading System - Operations Report</h1>
+                <p><strong>Report Date:</strong> 2025-10-31</p>
+
+                <h2>📈 Performance Summary</h2>
+                <div class="metrics">
+        
+                    <div class="metric">
+                        <div class="metric-label">Daily Return</div>
+                        <div class="metric-value negative">
+                            0.00%
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Total Return</div>
+                        <div class="metric-value negative">
+                            -100.00%
+                        </div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Sharpe Ratio</div>
+                        <div class="metric-value">0.00</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Volatility</div>
+                        <div class="metric-value">nan%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Max Drawdown</div>
+                        <div class="metric-value negative">-100.03%</div>
+                    </div>
+                </div>
+        
+                <div class="alert">
+                    <strong>🚨 KILL-SWITCH ALERT:</strong> Rolling Sharpe -inf below threshold 0.50
+                </div>
+            
+                <h2>➕ Top Position Increases</h2>
+                <table>
+                    <tr><th>Symbol</th><th>Previous</th><th>Current</th><th>Change</th></tr>
+            
+                    <tr>
+                        <td><strong>HUM</strong></td>
+                        <td>5.25%</td>
+                        <td>9.75%</td>
+                        <td class="positive">4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>RMD</strong></td>
+                        <td>5.25%</td>
+                        <td>9.75%</td>
+                        <td class="positive">4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>MOS</strong></td>
+                        <td>2.87%</td>
+                        <td>5.33%</td>
+                        <td class="positive">2.46%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>KEY</strong></td>
+                        <td>2.07%</td>
+                        <td>3.84%</td>
+                        <td class="positive">1.77%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>CHTR</strong></td>
+                        <td>1.93%</td>
+                        <td>3.59%</td>
+                        <td class="positive">1.66%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>PAYC</strong></td>
+                        <td>1.72%</td>
+                        <td>3.19%</td>
+                        <td class="positive">1.47%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>GNRC</strong></td>
+                        <td>0.86%</td>
+                        <td>1.60%</td>
+                        <td class="positive">0.74%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>DAY</strong></td>
+                        <td>4.60%</td>
+                        <td>5.25%</td>
+                        <td class="positive">0.65%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>AAPL</strong></td>
+                        <td>0.35%</td>
+                        <td>0.65%</td>
+                        <td class="positive">0.30%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>ADM</strong></td>
+                        <td>0.35%</td>
+                        <td>0.65%</td>
+                        <td class="positive">0.30%</td>
+                    </tr>
+                </table>
+                <h2>➖ Top Position Decreases</h2>
+                <table>
+                    <tr><th>Symbol</th><th>Previous</th><th>Current</th><th>Change</th></tr>
+            
+                    <tr>
+                        <td><strong>SW</strong></td>
+                        <td>9.75%</td>
+                        <td>0.35%</td>
+                        <td class="negative">-9.40%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>TKO</strong></td>
+                        <td>9.75%</td>
+                        <td>5.25%</td>
+                        <td class="negative">-4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>PSKY</strong></td>
+                        <td>9.75%</td>
+                        <td>5.25%</td>
+                        <td class="negative">-4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>RVTY</strong></td>
+                        <td>9.75%</td>
+                        <td>5.25%</td>
+                        <td class="negative">-4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>XYZ</strong></td>
+                        <td>9.75%</td>
+                        <td>5.25%</td>
+                        <td class="negative">-4.50%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>BF-B</strong></td>
+                        <td>7.41%</td>
+                        <td>5.25%</td>
+                        <td class="negative">-2.16%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>CPAY</strong></td>
+                        <td>0.65%</td>
+                        <td>0.35%</td>
+                        <td class="negative">-0.30%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>BRK-B</strong></td>
+                        <td>0.65%</td>
+                        <td>0.35%</td>
+                        <td class="negative">-0.30%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>VLTO</strong></td>
+                        <td>0.65%</td>
+                        <td>0.35%</td>
+                        <td class="negative">-0.30%</td>
+                    </tr>
+                
+                    <tr>
+                        <td><strong>DLR</strong></td>
+                        <td>2.29%</td>
+                        <td>2.10%</td>
+                        <td class="negative">-0.19%</td>
+                    </tr>
+                </table>
+                <h2>🔄 Turnover Summary</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-label">Avg Turnover</div>
+                        <div class="metric-value">36.67%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Max Turnover</div>
+                        <div class="metric-value">49.64%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Total Costs</div>
+                        <div class="metric-value">$437.79</div>
+                    </div>
+                </div>
+            
+                    <div class="warning">
+                        <strong>⚠️ Warning:</strong> 122 turnover cap breaches detected
+                    </div>
+                
+                <h2>🌐 Market Regime</h2>
+                <p><strong>Current Regime:</strong> Risk-Off</p>
+                <p><strong>Risk Multiplier:</strong> 0.50</p>
+            
+                <h2>💼 Sleeve Allocation</h2>
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-label">Equities</div>
+                        <div class="metric-value">50.00%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Crypto</div>
+                        <div class="metric-value">0.00%</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Cash</div>
+                        <div class="metric-value">50.00%</div>
+                    </div>
+                </div>
+            
+                <div class="footer">
+                    <p>Generated by ML Trading System | 2025-10-31 15:44:40</p>
+                    <p>🤖 Powered by Claude Code</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        

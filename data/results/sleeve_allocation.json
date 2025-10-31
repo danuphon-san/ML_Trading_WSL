@@ -1,0 +1,15 @@
+{
+  "allocation": {
+    "equities": 0.49999999305555587,
+    "crypto": 1.388888831018521e-08,
+    "cash": 0.49999999305555587
+  },
+  "method": "erc",
+  "date": "2024-03-01 05:00:00",
+  "metrics": {
+    "equity_volatility": 0.0,
+    "crypto_volatility": 0.0,
+    "estimated_portfolio_volatility": 0.0
+  },
+  "rebalance_threshold": 0.05
+}
