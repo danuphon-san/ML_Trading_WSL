@@ -32,6 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from utils.cli_parser import create_core_pipeline_parser, parse_step_ranges, validate_step_ranges, print_execution_plan
 from utils.pipeline_utils import PipelineTracker, run_with_error_handling, validate_artifacts, ensure_directories, get_step_name
+from utils.config_loader import load_config
 
 from src.io.universe import load_sp500_constituents
 from src.io.ingest_ohlcv import OHLCVIngester
@@ -64,9 +65,8 @@ def main():
     logger.add(sys.stderr, level=log_level)
     logger.add("logs/core_pipeline.log", rotation="10 MB", level="DEBUG")
 
-    # Load config
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    # Load config with environment variable support
+    config = load_config(args.config)
 
     # Override config with CLI args
     if args.start_date:
@@ -148,6 +148,8 @@ def main():
         fund_api_key = None
         if fund_provider == 'alpha_vantage':
             fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
+        elif fund_provider == 'simfin':
+            fund_api_key = fund_config.get('simfin', {}).get('api_key')
 
         fund_ingester = FundamentalsIngester(
             storage_path="data/fundamentals",
@@ -220,6 +222,8 @@ def main():
         fund_api_key = None
         if fund_provider == 'alpha_vantage':
             fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
+        elif fund_provider == 'simfin':
+            fund_api_key = fund_config.get('simfin', {}).get('api_key')
 
         fund_ingester = FundamentalsIngester(
             storage_path="data/fundamentals",
