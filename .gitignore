@@ -7,6 +7,7 @@ data/labels/*
 data/models/*
 data/portfolio/*
 data/reports/*
+data/simfin_data/*
 !data/.gitkeep
 
 # Database
@@ -67,3 +68,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+data/simfin_data/
+data/parquet
+data/simfin_data/
