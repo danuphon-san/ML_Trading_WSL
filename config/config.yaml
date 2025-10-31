@@ -24,7 +24,7 @@ ingest:
 
 # Fundamental data ingestion
 fundamentals:
-  provider: "simfin"  # yfinance (5 quarters), alpha_vantage (80+ quarters), or simfin (20+ years)
+  provider: "yfinance"  # yfinance (5 quarters), alpha_vantage (80+ quarters), or simfin (20+ years)
   
   simfin:
     api_key: ${SIMFIN_API_KEY}  # Set in .env file or environment variable
