@@ -53,8 +53,8 @@ Examples:
     parser.add_argument(
         '--symbols',
         type=int,
-        default=100,
-        help='Number of symbols to use from universe. Default: 100'
+        default=500,
+        help='Number of symbols to use from universe. Default: 500'
     )
 
     parser.add_argument(

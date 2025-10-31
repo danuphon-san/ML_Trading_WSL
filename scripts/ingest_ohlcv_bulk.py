@@ -22,12 +22,13 @@ from typing import List, Dict, Optional
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-import yaml
 import argparse
 from loguru import logger
 from tqdm import tqdm
 
-from src.io.ingest_ohlcv import OHLCVIngester
+from utils.config_loader import load_config
+
+from src.io.ingest_ohlcv import OHLCVIngester, build_provider_kwargs
 from src.io.universe import load_sp500_constituents
 
 
@@ -107,9 +108,16 @@ class BulkOHLCVFetcher:
         self,
         provider: str = "yfinance",
         storage_path: str = "data/parquet",
-        frequency: str = "1d"
+        frequency: str = "1d",
+        provider_kwargs: Optional[Dict] = None
     ):
-        self.ingester = OHLCVIngester(provider=provider, storage_path=storage_path)
+        self.provider = provider.lower()
+        self.provider_kwargs = provider_kwargs or {}
+        self.ingester = OHLCVIngester(
+            provider=provider,
+            storage_path=storage_path,
+            **self.provider_kwargs
+        )
         self.frequency = frequency
         self.tracker = ProgressTracker()
         
@@ -199,39 +207,51 @@ class BulkOHLCVFetcher:
         downloaded = []
         failed = []
         total_bars = 0
-        
-        for symbol in tqdm(symbols_to_download, desc="Fetching OHLCV"):
+
+        try:
+            data_dict = self.ingester.fetch_ohlcv(
+                symbols=symbols_to_download,
+                start_date=start_date,
+                end_date=end_date,
+                frequency=self.frequency
+            )
+        except Exception as exc:
+            logger.error(f"Bulk fetch failed for provider {self.provider}: {exc}")
+            for symbol in symbols_to_download:
+                failed.append(symbol)
+                self.tracker.mark_failed(symbol, str(exc))
+            return {
+                'total': len(symbols),
+                'downloaded': len(downloaded),
+                'skipped': len(skipped_fresh),
+                'failed': len(failed),
+                'total_bars': total_bars,
+                'duration_seconds': 0,
+                'symbols_per_minute': 0
+            }
+
+        for symbol in tqdm(symbols_to_download, desc="Saving OHLCV"):
             self.tracker.mark_in_progress(symbol)
-            
-            try:
-                # Fetch data for single symbol
-                data_dict = self.ingester.fetch_ohlcv(
-                    symbols=[symbol],
-                    start_date=start_date,
-                    end_date=end_date,
-                    frequency=self.frequency
-                )
-                
-                if symbol in data_dict and not data_dict[symbol].empty:
-                    # Save to parquet
+            df = data_dict.get(symbol)
+
+            if df is not None and not df.empty:
+                try:
                     self.ingester.save_parquet(
-                        data_dict={symbol: data_dict[symbol]},
+                        data_dict={symbol: df},
                         frequency=self.frequency,
                         partitioned=True
                     )
-                    
                     downloaded.append(symbol)
-                    total_bars += len(data_dict[symbol])
+                    total_bars += len(df)
                     self.tracker.mark_completed(symbol)
-                else:
-                    logger.warning(f"No data returned for {symbol}")
+                except Exception as e:
+                    logger.error(f"Failed to save {symbol}: {e}")
                     failed.append(symbol)
-                    self.tracker.mark_failed(symbol, "No data returned")
-                    
-            except Exception as e:
-                logger.error(f"Failed to fetch {symbol}: {e}")
+                    self.tracker.mark_failed(symbol, f"Save failed: {e}")
+            else:
+                logger.warning(f"No data returned for {symbol}")
                 failed.append(symbol)
-                self.tracker.mark_failed(symbol, str(e))
+                self.tracker.mark_failed(symbol, "No data returned")
         
         # Calculate statistics
         duration = datetime.now() - self.tracker.start_time
@@ -247,12 +267,6 @@ class BulkOHLCVFetcher:
         }
         
         return stats
-
-
-def load_config(config_path: str = "config/config.yaml") -> dict:
-    """Load configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
 
 
 def calculate_date_range(years: Optional[int], start_date: Optional[str], end_date: Optional[str]) -> tuple:
@@ -393,10 +407,17 @@ Examples:
     print("=" * 70)
     
     # Initialize fetcher
+    try:
+        provider_kwargs = build_provider_kwargs(args.provider, cfg)
+    except ValueError as exc:
+        logger.error(exc)
+        sys.exit(1)
+
     fetcher = BulkOHLCVFetcher(
         provider=args.provider,
         storage_path=cfg['data']['parquet'],
-        frequency=args.frequency
+        frequency=args.frequency,
+        provider_kwargs=provider_kwargs
     )
     
     # Fetch data

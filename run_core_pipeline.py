@@ -34,7 +34,7 @@ from utils.pipeline_utils import PipelineTracker, run_with_error_handling, valid
 from utils.config_loader import load_config_with_validation
 
 from src.io.universe import load_sp500_constituents
-from src.io.ingest_ohlcv import OHLCVIngester
+from src.io.ingest_ohlcv import OHLCVIngester, build_provider_kwargs
 from src.io.ingest_fundamentals import FundamentalsIngester
 from src.io.results_saver import ResultsSaver
 from src.io.storage import save_dataframe
@@ -153,20 +153,49 @@ def main():
         state['symbols'] = load_sp500_constituents()[:args.symbols]
         logger.info(f"Selected {len(state['symbols'])} symbols")
 
-        # Fetch OHLCV
-        ingester = OHLCVIngester()
-        start_date = config['ingest']['start_date']
+        ingest_cfg = config.get('ingest', {})
+        price_provider = ingest_cfg.get('provider', 'yfinance')
+        frequencies = ingest_cfg.get('frequencies', ['1d'])
+        frequency = frequencies[0] if frequencies else '1d'
+        start_date = ingest_cfg.get('start_date')
+        end_date = ingest_cfg.get('end_date')
 
-        logger.info(f"Fetching OHLCV data from {start_date}")
-        state['ohlcv_data'] = ingester.fetch_ohlcv(state['symbols'], start_date, None)
-        ingester.save_parquet(state['ohlcv_data'])
+        if not start_date:
+            start_date = "2015-01-01"
+
+        try:
+            provider_kwargs = build_provider_kwargs(price_provider, config)
+        except ValueError as exc:
+            logger.error(f"OHLCV provider misconfigured: {exc}")
+            raise
+
+        storage_path = config.get('data', {}).get('parquet', "data/parquet")
+        ingester = OHLCVIngester(
+            provider=price_provider,
+            storage_path=storage_path,
+            **provider_kwargs
+        )
+
+        logger.info(f"Fetching OHLCV data from {start_date} via {price_provider}")
+        state['ohlcv_data'] = ingester.fetch_ohlcv(
+            state['symbols'],
+            start_date,
+            end_date,
+            frequency=frequency
+        )
+        ingester.save_parquet(state['ohlcv_data'], frequency=frequency)
 
         if benchmark_symbol and benchmark_symbol not in state['symbols']:
             logger.info(f"Fetching benchmark OHLCV data for {benchmark_symbol}")
-            benchmark_data = ingester.fetch_ohlcv([benchmark_symbol], start_date, None)
+            benchmark_data = ingester.fetch_ohlcv(
+                [benchmark_symbol],
+                start_date,
+                end_date,
+                frequency=frequency
+            )
 
             if benchmark_data:
-                ingester.save_parquet(benchmark_data)
+                ingester.save_parquet(benchmark_data, frequency=frequency)
             else:
                 logger.warning(
                     f"Benchmark {benchmark_symbol} returned no data from provider. "

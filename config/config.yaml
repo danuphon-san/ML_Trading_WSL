@@ -14,7 +14,7 @@ data:
 
 # Data ingestion
 ingest:
-  provider: "yfinance"  # yfinance, alpha_vantage, polygon, etc.
+  provider: "simfin"  # yfinance, alpha_vantage, polygon, etc.
   frequencies:
     - "1d"
   start_date: "2015-01-01"

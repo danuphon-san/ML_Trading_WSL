@@ -2,11 +2,102 @@
 OHLCV data ingestion from various providers
 """
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional
+
 import pandas as pd
 import yfinance as yf
 from loguru import logger
 from tqdm import tqdm
+
+try:
+    import simfin as sf
+    from simfin.names import TICKER
+
+    _SIMFIN_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    _SIMFIN_AVAILABLE = False
+
+    # Lazy import warning handled when provider is used
+
+SIMFIN_TICKER_MAPPING = {
+    # Class B shares: hyphen to dot
+    'BRK-B': 'BRK.B',
+    'BF-B': 'BF.B',
+    # Multiple share classes (try alternate class)
+    'GOOGL': 'GOOG',
+    'FOXA': 'FOX',
+    'NWSA': 'NWS',
+    # Other known mappings
+    'GEV': 'GE',
+}
+
+
+def _simfin_ticker_variants(symbol: str) -> List[str]:
+    """
+    Generate ticker variants for SimFin compatibility.
+
+    Args:
+        symbol: Original ticker symbol (typically S&P500 format)
+
+    Returns:
+        Ordered list of candidate tickers to query in SimFin data.
+    """
+    variants = [symbol]
+
+    mapped = SIMFIN_TICKER_MAPPING.get(symbol)
+    if mapped and mapped not in variants:
+        variants.append(mapped)
+
+    if '-' in symbol:
+        dot_variant = symbol.replace('-', '.')
+        if dot_variant not in variants:
+            variants.append(dot_variant)
+
+    return variants
+
+
+def build_provider_kwargs(provider: str, config: Dict) -> Dict:
+    """
+    Extract provider-specific configuration for OHLCV ingestion from config.
+
+    Currently supports SimFin by reusing credentials defined under fundamentals.
+    """
+    provider_lower = provider.lower()
+
+    if provider_lower == "simfin":
+        fundamentals_cfg = config.get("fundamentals", {})
+        simfin_cfg = fundamentals_cfg.get("simfin", {})
+
+        api_key = simfin_cfg.get("api_key")
+        data_dir = simfin_cfg.get("data_dir", "data/simfin_data")
+        market = simfin_cfg.get("market", "us")
+        variant = simfin_cfg.get("shareprice_variant", "daily")
+
+        if not api_key or str(api_key).startswith("${") or "your-simfin-api-key" in str(api_key):
+            raise ValueError(
+                "SimFin provider selected but API key is not configured. "
+                "Set fundamentals.simfin.api_key in config/config.yaml or via environment variable."
+            )
+
+        return {
+            "api_key": api_key,
+            "data_dir": data_dir,
+            "market": market,
+            "variant": variant or "daily",
+        }
+
+    return {}
+
+
+def _normalize_date_column(series: pd.Series) -> pd.Series:
+    """
+    Ensure datetime series is timezone naive in UTC for consistent downstream logic.
+    """
+    if series.empty:
+        return series
+
+    series = pd.to_datetime(series, utc=True, errors="coerce")
+    return series.dt.tz_localize(None)
 
 
 class OHLCVIngester:
@@ -15,7 +106,8 @@ class OHLCVIngester:
     def __init__(
         self,
         provider: str = "yfinance",
-        storage_path: str = "data/parquet"
+        storage_path: str = "data/parquet",
+        **provider_kwargs,
     ):
         """
         Initialize OHLCV ingester
@@ -23,10 +115,13 @@ class OHLCVIngester:
         Args:
             provider: Data provider (yfinance, alpha_vantage, polygon, etc.)
             storage_path: Path to store parquet files
+            provider_kwargs: Optional provider-specific configuration parameters
+                (e.g., SimFin API key, data directory, market)
         """
         self.provider = provider
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.provider_kwargs = provider_kwargs
 
         logger.info(f"Initialized OHLCVIngester with provider={provider}")
 
@@ -49,10 +144,14 @@ class OHLCVIngester:
         Returns:
             Dictionary of {symbol: DataFrame} with OHLCV data
         """
-        if self.provider == "yfinance":
+        provider = self.provider.lower()
+
+        if provider == "yfinance":
             return self._fetch_yfinance(symbols, start_date, end_date, frequency)
-        else:
-            raise ValueError(f"Provider {self.provider} not implemented")
+        if provider == "simfin":
+            return self._fetch_simfin(symbols, start_date, end_date, frequency)
+
+        raise ValueError(f"Provider {self.provider} not implemented")
 
     def _fetch_yfinance(
         self,
@@ -106,6 +205,113 @@ class OHLCVIngester:
                 logger.error(f"Failed to fetch {symbol}: {e}")
 
         logger.info(f"Successfully fetched {len(data_dict)}/{len(symbols)} symbols")
+        return data_dict
+
+    def _fetch_simfin(
+        self,
+        symbols: List[str],
+        start_date: str,
+        end_date: Optional[str],
+        frequency: str,
+    ) -> Dict[str, pd.DataFrame]:
+        """Fetch data from SimFin bulk share price dataset"""
+        if not _SIMFIN_AVAILABLE:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "SimFin provider requested but 'simfin' package is not installed. "
+                "Install with `pip install simfin`."
+            )
+
+        if frequency not in ("1d", "1D"):
+            raise ValueError("SimFin provider currently supports only daily ('1d') frequency.")
+
+        api_key = self.provider_kwargs.get("api_key") or self.provider_kwargs.get("simfin_api_key")
+        data_dir = self.provider_kwargs.get("data_dir") or self.provider_kwargs.get("simfin_data_dir")
+        market = self.provider_kwargs.get("market", "us")
+        variant = self.provider_kwargs.get("variant", "daily")
+
+        if not api_key:
+            raise ValueError("SimFin provider requires 'api_key' in provider kwargs or configuration.")
+
+        if not data_dir:
+            data_dir = "data/simfin_data"
+
+        data_dir_path = Path(data_dir)
+        data_dir_path.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Fetching SimFin share prices for {len(symbols)} symbols ({market}, {variant})")
+
+        sf.set_api_key(api_key)
+        sf.set_data_dir(str(data_dir_path))
+
+        df_prices = sf.load_shareprices(variant=variant, market=market)
+
+        available_tickers = df_prices.index.get_level_values(TICKER)
+        available_unique = available_tickers.unique()
+
+        logger.info(
+            "Loaded SimFin share price dataset with "
+            f"{len(available_unique)} tickers"
+        )
+
+        available_set = set(available_unique.tolist())
+
+        data_dict: Dict[str, pd.DataFrame] = {}
+        start_ts = pd.to_datetime(start_date)
+        end_ts = pd.to_datetime(end_date) if end_date else None
+
+        for symbol in symbols:
+            ticker_variants = _simfin_ticker_variants(symbol)
+            selected_variant = None
+
+            for candidate in ticker_variants:
+                if candidate in available_set:
+                    selected_variant = candidate
+                    if candidate != symbol:
+                        logger.debug(f"Ticker mapping applied: {symbol} -> {candidate}")
+                    break
+
+            if not selected_variant:
+                logger.warning(f"No SimFin data found for {symbol} (tried {ticker_variants})")
+                continue
+
+            symbol_df = df_prices.loc[selected_variant].reset_index()
+
+            column_mapping = {
+                "Date": "date",
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Adj. Close": "adj_close",
+                "Volume": "volume",
+                "Dividend": "dividends",
+                "Common Shares Outstanding": "shares_outstanding",
+                "Market-Cap": "market_cap",
+            }
+
+            symbol_df = symbol_df.rename(columns=column_mapping)
+
+            symbol_df["symbol"] = symbol
+
+            if "date" not in symbol_df.columns:
+                logger.warning(f"SimFin data for {symbol} lacks 'Date' column, skipping.")
+                continue
+
+            symbol_df["date"] = _normalize_date_column(symbol_df["date"])
+
+            if start_ts is not None:
+                symbol_df = symbol_df[symbol_df["date"] >= start_ts]
+            if end_ts is not None:
+                symbol_df = symbol_df[symbol_df["date"] <= end_ts]
+
+            symbol_df = symbol_df.sort_values("date")
+
+            if "dividends" in symbol_df.columns:
+                symbol_df["dividends"] = symbol_df["dividends"].fillna(0)
+
+            data_dict[symbol] = symbol_df.reset_index(drop=True)
+
+        logger.info(f"Successfully fetched {len(data_dict)}/{len(symbols)} symbols from SimFin")
         return data_dict
 
     def save_parquet(
@@ -210,6 +416,9 @@ class OHLCVIngester:
             try:
                 df = pd.read_parquet(file)
 
+                if 'date' in df.columns:
+                    df['date'] = _normalize_date_column(df['date'])
+
                 # Apply date filters
                 if start_date:
                     df = df[df['date'] >= pd.to_datetime(start_date)]
@@ -250,6 +459,8 @@ class OHLCVIngester:
 
                 if symbol_path.exists():
                     existing = pd.read_parquet(symbol_path)
+                    if 'date' in existing.columns:
+                        existing['date'] = _normalize_date_column(existing['date'])
                     last_date = existing['date'].max()
 
                     # Fetch new data from last date + 1 day
