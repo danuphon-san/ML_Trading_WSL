@@ -20,7 +20,6 @@ Produces 5 required artifacts:
 5. models/latest/model.pkl
 """
 import sys
-import yaml
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -32,6 +31,7 @@ sys.path.insert(0, str(project_root))
 
 from utils.cli_parser import create_core_pipeline_parser, parse_step_ranges, validate_step_ranges, print_execution_plan
 from utils.pipeline_utils import PipelineTracker, run_with_error_handling, validate_artifacts, ensure_directories, get_step_name
+from utils.config_loader import load_config_with_validation
 
 from src.io.universe import load_sp500_constituents
 from src.io.ingest_ohlcv import OHLCVIngester
@@ -64,13 +64,30 @@ def main():
     logger.add(sys.stderr, level=log_level)
     logger.add("logs/core_pipeline.log", rotation="10 MB", level="DEBUG")
 
-    # Load config
-    with open(args.config) as f:
-        config = yaml.safe_load(f)
+    # Load config (includes .env interpolation)
+    config = load_config_with_validation(args.config)
 
     # Override config with CLI args
     if args.start_date:
         config['ingest']['start_date'] = args.start_date
+
+    # Fundamental provider settings (shared across steps)
+    fund_config = config.get('fundamentals', {})
+    fund_provider = fund_config.get('provider', 'yfinance').lower()
+    fund_api_key = None
+    fund_kwargs = {}
+
+    if fund_provider == 'alpha_vantage':
+        alpha_cfg = fund_config.get('alpha_vantage', {})
+        fund_api_key = alpha_cfg.get('api_key')
+    elif fund_provider == 'simfin':
+        simfin_cfg = fund_config.get('simfin', {})
+        fund_api_key = simfin_cfg.get('api_key')
+        fund_kwargs.update({
+            'simfin_data_dir': simfin_cfg.get('data_dir'),
+            'simfin_market': simfin_cfg.get('market', 'us'),
+            'simfin_variant': simfin_cfg.get('variant', 'quarterly')
+        })
 
     # Parse steps to execute
     steps_to_run = parse_step_ranges(args.steps, args.skip)
@@ -143,16 +160,11 @@ def main():
         ingester.save_parquet(state['ohlcv_data'])
 
         # Fetch fundamentals
-        fund_config = config.get('fundamentals', {})
-        fund_provider = fund_config.get('provider', 'yfinance')
-        fund_api_key = None
-        if fund_provider == 'alpha_vantage':
-            fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
-
         fund_ingester = FundamentalsIngester(
             storage_path="data/fundamentals",
             provider=fund_provider,
-            api_key=fund_api_key
+            api_key=fund_api_key,
+            **fund_kwargs
         )
         logger.info(f"Fetching fundamental data using {fund_provider}")
         state['fundamentals_data'] = fund_ingester.fetch_fundamentals(state['symbols'])
@@ -215,16 +227,11 @@ def main():
 
     def step_4_fundamental_features():
         """Generate fundamental features with PIT alignment"""
-        fund_config = config.get('fundamentals', {})
-        fund_provider = fund_config.get('provider', 'yfinance')
-        fund_api_key = None
-        if fund_provider == 'alpha_vantage':
-            fund_api_key = fund_config.get('alpha_vantage', {}).get('api_key')
-
         fund_ingester = FundamentalsIngester(
             storage_path="data/fundamentals",
             provider=fund_provider,
-            api_key=fund_api_key
+            api_key=fund_api_key,
+            **fund_kwargs
         )
 
         if state['symbols'] is None:
